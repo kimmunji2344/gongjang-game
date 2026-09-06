@@ -5,6 +5,7 @@
   "version": "0.0.1",
   "scripts": {
     "dev": "vite",
+    "dev:all": "concurrently -k -n client,server -c blue,green \"vite\" \"npm --prefix server run dev\"",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run"
@@ -13,6 +14,7 @@
     "phaser": "^3.90.0"
   },
   "devDependencies": {
+    "concurrently": "^9.1.0",
     "typescript": "^7.0.2",
     "vite": "^8.2.2",
     "vitest": "^5.0.0"

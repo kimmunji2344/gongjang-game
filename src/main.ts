@@ -2,7 +2,7 @@ import { runPreGameFlow } from './ui/screens';
 import { startFactory } from './game';
 
 runPreGameFlow()
-  .then(startFactory)
+  .then(({ userId, save }) => startFactory(userId, save))
   .catch((err: unknown) => {
     console.error('시작 실패:', err);
     document.body.innerHTML =

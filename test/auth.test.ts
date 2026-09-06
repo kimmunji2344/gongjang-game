@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { checkId, checkPw, checkPwConfirm } from '../src/data/authRules';
 
 // vitest(node) 환경엔 localStorage가 없어 셰임 주입
@@ -14,9 +14,32 @@ const _store = new Map<string, string>();
   setItem: (k: string, v: string) => void _store.set(k, v),
 };
 
-const { signUp, logIn, session, logOut, idExists } = await import('../src/auth/mockAuth');
+const { signUp, logIn, idTaken, session, logOut, getToken } = await import('../src/auth/api');
+
+// 테스트용 JWT (서명은 클라가 검증 안 하므로 아무 값). session()이 base64 표준/url 둘 다 처리.
+function fakeJwt(payload: Record<string, unknown>): string {
+  return `header.${btoa(JSON.stringify(payload))}.sig`;
+}
+
+const soon = () => Math.floor(Date.now() / 1000) + 999;
+const past = () => Math.floor(Date.now() / 1000) - 1;
+
+function mockFetch(body: unknown, status = 200): void {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(
+      async () =>
+        ({
+          ok: status >= 200 && status < 300,
+          status,
+          json: async () => body,
+        }) as Response,
+    ),
+  );
+}
 
 beforeEach(() => _store.clear());
+afterEach(() => vi.unstubAllGlobals());
 
 describe('입력 규칙 (Obsidian 시작 화면 & 계정 시스템)', () => {
   it('ID는 4~12자', () => {
@@ -41,32 +64,67 @@ describe('입력 규칙 (Obsidian 시작 화면 & 계정 시스템)', () => {
   });
 });
 
-describe('목업 인증', () => {
-  it('회원가입 → 로그인 성공 → 세션 유지', async () => {
-    expect((await signUp('tester', 'abcd1234')).ok).toBe(true);
-    expect(idExists('tester')).toBe(true);
-    expect((await logIn('tester', 'abcd1234')).ok).toBe(true);
+describe('api.ts — 서버 인증 클라이언트', () => {
+  it('회원가입 성공', async () => {
+    mockFetch({ ok: true });
+    expect(await signUp('tester', 'abcd1234')).toEqual({ ok: true });
+  });
+
+  it('회원가입 중복 → 서버 에러 메시지 그대로 전달', async () => {
+    mockFetch({ ok: false, error: '중복아이디입니다' }, 400);
+    expect(await signUp('dupid', 'abcd1234')).toEqual({ ok: false, error: '중복아이디입니다' });
+  });
+
+  it('서버 연결 불가 시 연결 에러', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('network');
+      }),
+    );
+    expect(await signUp('tester', 'abcd1234')).toEqual({
+      ok: false,
+      error: '서버에 연결할 수 없습니다',
+    });
+  });
+
+  it('로그인 성공 → 토큰 저장 + session()이 id 반환', async () => {
+    const token = fakeJwt({ id: 'tester', exp: soon() });
+    mockFetch({ token });
+    expect(await logIn('tester', 'abcd1234')).toEqual({ ok: true });
+    expect(getToken()).toBe(token);
     expect(session()).toBe('tester');
   });
-  it('중복 ID 거부', async () => {
-    await signUp('dupid', 'abcd1234');
-    expect(await signUp('dupid', 'zzzz9999')).toEqual({ ok: false, error: '중복아이디입니다' });
-  });
+
   it('로그인 실패는 공용 에러 (아이디/비번 구분 안 함)', async () => {
-    await signUp('user1', 'abcd1234');
-    const msg = '아이디 또는 비밀번호가 일치하지 않습니다';
-    expect(await logIn('user1', 'wrongpw99')).toEqual({ ok: false, error: msg });
-    expect(await logIn('ghost', 'abcd1234')).toEqual({ ok: false, error: msg });
+    mockFetch({ error: '아이디 또는 비밀번호가 일치하지 않습니다' }, 401);
+    expect(await logIn('ghost', 'abcd1234')).toEqual({
+      ok: false,
+      error: '아이디 또는 비밀번호가 일치하지 않습니다',
+    });
     expect(session()).toBeNull();
   });
-  it('회원가입은 자동 로그인 안 함', async () => {
-    await signUp('user2', 'abcd1234');
+
+  it('session(): 만료된 토큰은 null', () => {
+    _store.set('gongjang_token', fakeJwt({ id: 'u', exp: past() }));
     expect(session()).toBeNull();
   });
-  it('로그아웃 시 세션 제거', async () => {
-    await signUp('user3', 'abcd1234');
-    await logIn('user3', 'abcd1234');
+
+  it('session(): 깨진 토큰은 null', () => {
+    _store.set('gongjang_token', 'not-a-jwt');
+    expect(session()).toBeNull();
+  });
+
+  it('logOut() 시 세션 제거', () => {
+    _store.set('gongjang_token', fakeJwt({ id: 'u', exp: soon() }));
     logOut();
     expect(session()).toBeNull();
+  });
+
+  it('idTaken(): 서버 응답 전달', async () => {
+    mockFetch({ taken: true });
+    expect(await idTaken('someid')).toBe(true);
+    mockFetch({ taken: false });
+    expect(await idTaken('someid')).toBe(false);
   });
 });

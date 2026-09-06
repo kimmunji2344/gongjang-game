@@ -1,10 +1,13 @@
-// M0 앞단 흐름: 메뉴 → 인증(로그인/회원가입) → 로딩 → 게임.
+// 앞단 흐름: 메뉴 → 인증(로그인/회원가입) → 로딩(서버 접속 + 세이브 로드) → 게임.
 // 화면은 전부 DOM (Phaser는 로그인 통과 후에만 로드).
 import './screens.css';
 import { checkId, checkPw, checkPwConfirm, type FieldCheck } from '../data/authRules';
-import { idExists, logIn, logOut, session, signUp } from '../auth/mockAuth';
+import { idTaken, logIn, logOut, session, signUp } from '../auth/api';
+import { loadSave } from '../net/save';
+import type { SimState } from '../sim/sim';
 
 const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+const DUP_CHECK_DEBOUNCE_MS = 400;
 
 function $<T extends HTMLElement>(sel: string): T {
   const el = document.querySelector<T>(sel);
@@ -96,6 +99,22 @@ function runAuth(): Promise<void> {
     const err = $('#auth-error');
     const submit = $<HTMLButtonElement>('#auth-submit');
 
+    // 회원가입 중복 ID 체크 — 서버 호출을 디바운스. 결과 확정 전엔 제출 막음.
+    let dupTimer: number | undefined;
+    let checkedId = ''; // 서버에 마지막으로 물어본 id
+    let checkedTaken = false; // 그 결과
+
+    function scheduleDupCheck(id: string): void {
+      window.clearTimeout(dupTimer);
+      dupTimer = window.setTimeout(() => {
+        void idTaken(id).then((taken) => {
+          checkedId = id;
+          checkedTaken = taken;
+          if (mode === 'signup' && idInput.value.trim() === id) refresh();
+        });
+      }, DUP_CHECK_DEBOUNCE_MS);
+    }
+
     function refresh(): void {
       err.textContent = '';
       err.classList.remove('ok');
@@ -104,13 +123,30 @@ function runAuth(): Promise<void> {
 
       if (mode === 'signup') {
         const ci = checkId(id);
-        const dup = ci.ok && idExists(id);
         const cp = checkPw(pw);
         const cc = checkPwConfirm(pw, confirmInput.value);
-        fieldHint(idHint, id, dup ? { ok: false, msg: '중복아이디입니다' } : ci);
+        const settled = ci.ok && checkedId === id; // 서버 확인 완료 여부
+        const dup = settled && checkedTaken;
+
+        if (!ci.ok) {
+          fieldHint(idHint, id, ci);
+        } else if (!settled) {
+          idHint.className = 'hint';
+          idHint.textContent = '확인 중...';
+        } else {
+          fieldHint(
+            idHint,
+            id,
+            dup
+              ? { ok: false, msg: '중복아이디입니다' }
+              : { ok: true, msg: '사용 가능한 아이디입니다' },
+          );
+        }
         fieldHint(pwHint, pw, cp);
         fieldHint(confirmHint, confirmInput.value, cc);
-        submit.disabled = !(ci.ok && !dup && cp.ok && cc.ok);
+
+        submit.disabled = !(settled && !dup && cp.ok && cc.ok);
+        if (ci.ok && checkedId !== id) scheduleDupCheck(id);
       } else {
         idHint.textContent = '';
         pwHint.textContent = '';
@@ -129,6 +165,9 @@ function runAuth(): Promise<void> {
       idInput.value = '';
       pwInput.value = '';
       confirmInput.value = '';
+      window.clearTimeout(dupTimer);
+      checkedId = '';
+      checkedTaken = false;
       refresh();
     }
 
@@ -169,6 +208,7 @@ function runAuth(): Promise<void> {
     }
 
     function cleanup(): void {
+      window.clearTimeout(dupTimer);
       $('#tab-login').onclick = null;
       $('#tab-signup').onclick = null;
       idInput.oninput = pwInput.oninput = confirmInput.oninput = null;
@@ -189,28 +229,59 @@ function runAuth(): Promise<void> {
   });
 }
 
-// --- 로딩 (M0: 서버 접속을 짧은 지연으로 시뮬. M4에서 실제 연결로 교체) ---
-async function runLoading(): Promise<void> {
+// --- 로딩: 서버 접속 + 세이브 로드. 토큰 무효면 'reauth' 반환. ---
+type LoadOutcome = SimState | null | 'reauth';
+
+async function runLoading(): Promise<LoadOutcome> {
   show('loading', '');
   const text = $('#ui-loading-text');
   text.textContent = '서버에 접속 중입니다...';
-  await delay(600);
+  const slow = window.setTimeout(() => {
+    text.textContent = '서버에 접속 중입니다... (최대 1분 정도 걸릴 수 있어요)';
+  }, 5000);
+
+  const res = await loadSave();
+  window.clearTimeout(slow);
+
+  if (res.status === 'reauth') return 'reauth';
+  if (res.status === 'error') {
+    text.textContent = `${res.message} — 화면을 클릭하면 다시 시도합니다`;
+    await new Promise<void>((r) => {
+      const el = $('#ui-loading');
+      el.onclick = () => {
+        el.onclick = null;
+        r();
+      };
+    });
+    return runLoading();
+  }
+
   text.textContent = '불러오는 중...';
-  await delay(500);
+  await delay(300);
+  return res.state;
 }
 
-/** 메뉴 → 인증 → 로딩. 유효 토큰이 있으면 메뉴/인증을 건너뛴다. 게임 진입 준비되면 userId 반환. */
-export async function runPreGameFlow(): Promise<string> {
+/** 메뉴 → 인증 → 로딩. 유효 토큰이 있으면 메뉴/인증을 건너뛴다. 게임 진입 준비되면 userId + 세이브 반환. */
+export async function runPreGameFlow(): Promise<{ userId: string; save: SimState | null }> {
   buildDom();
-  if (!session()) {
-    await runMenu();
-    await runAuth();
+  for (;;) {
+    if (!session()) {
+      await runMenu();
+      await runAuth();
+    }
+    const loaded = await runLoading();
+    if (loaded === 'reauth') {
+      logOut();
+      continue; // 토큰 무효/만료 → 메뉴·로그인부터 다시
+    }
+    const userId = session();
+    if (!userId) {
+      logOut();
+      continue;
+    }
+    $('#ui').hidden = true;
+    return { userId, save: loaded };
   }
-  await runLoading();
-  const userId = session();
-  $('#ui').hidden = true;
-  if (!userId) throw new Error('세션이 없습니다 (로그인 흐름 오류)');
-  return userId;
 }
 
 export { logOut };

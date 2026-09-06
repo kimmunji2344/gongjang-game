@@ -19,15 +19,18 @@
 ## 구조
 - src/data/   — config / resources / speed / authRules (데이터 표, 하드코딩 금지)
 - src/sim/    — grid(타일·설치물), sim(틱 시뮬·경로탐색·배치). Phaser 비의존 순수 TS
-- src/auth/   — mockAuth (M0 로컬 목업 인증, M4에서 실 Express+JWT로 교체)
-- src/ui/     — screens (메뉴/로그인/회원가입/로딩 DOM 화면)
-- src/scenes/ — FactoryScene (렌더 + 입력, 플레이스홀더 그래픽)
-- src/game.ts — 로그인 통과 후 Phaser 지연 로딩
-- test/       — vitest (sim + auth 로직만)
+- src/auth/   — api (M4 실서버 인증 클라이언트, /api/auth/* 호출)
+- src/net/    — save (서버 세이브 로드/저장)
+- src/ui/     — screens (메뉴/로그인/회원가입/로딩 DOM 화면 + 흐름)
+- src/scenes/ — FactoryScene (렌더 + 입력 + 자동/수동 저장, 플레이스홀더 그래픽)
+- src/game.ts — 로그인 통과 후 Phaser 지연 로딩 (세이브 주입)
+- server/     — M4 백엔드 (독립 패키지: Express + MongoDB Atlas + bcrypt + JWT). server/.env 는 gitignore
+- test/       — vitest (sim + auth 클라이언트). server/test/ 는 서버 자체 vitest
 
 ## 명령
-- npm run dev    개발 서버
-- npm run build  타입체크 + 빌드
-- npm test       로직 테스트
+- npm run dev      클라 개발 서버 (5173)
+- npm run dev:all  클라 + 서버(3000) 동시 (server/.env 필요)
+- npm run build    타입체크 + 빌드
+- npm test         클라 로직 테스트  /  npm --prefix server test  서버 테스트
 
-## 현재: M0 (메뉴 · 로그인/회원가입, 로컬 목업). M1(코어 루프) 완료. 실서버/세이브는 M4.
+## 현재: M4 단계 A 완료 (실 인증 + 세이브, 로컬). 단계 B = GitHub 원격 + Render 배포 대기. M2(가공)는 건너뜀.

@@ -13,6 +13,7 @@ import {
   removePlaceable,
   step,
 } from '../sim/sim';
+import { putSave } from '../net/save';
 
 type Tool = 'conveyor' | 'node' | 'exporter' | 'remove';
 
@@ -45,6 +46,7 @@ const TOOL_LABEL: Record<Tool, string> = {
 
 export class FactoryScene extends Phaser.Scene {
   private sim!: SimState;
+  private startSave: SimState | null = null; // 서버에서 불러온 세이브 (없으면 새 게임)
   private acc = 0;
   private tool: Tool = 'conveyor';
   private dir: Dir = 'E'; // 설치할 컨베이어/Node의 방향 (R로 회전)
@@ -58,8 +60,12 @@ export class FactoryScene extends Phaser.Scene {
     super('factory');
   }
 
+  init(data: { save?: SimState | null }): void {
+    this.startSave = data?.save ?? null;
+  }
+
   create(): void {
-    this.sim = initialState();
+    this.sim = this.startSave ?? initialState();
     this.gfx = this.add.graphics();
 
     this.hud = this.add.text(16, 16, '', {
@@ -106,6 +112,44 @@ export class FactoryScene extends Phaser.Scene {
     this.input.keyboard?.on('keydown-R', () => {
       this.dir = nextDir(this.dir);
     });
+
+    // 수동 저장 버튼 (플레이스홀더 — M7 재디자인)
+    this.add
+      .text(700, 16, '저장', {
+        color: '#111',
+        backgroundColor: '#cfe8cf',
+        padding: { x: 10, y: 5 },
+        fontSize: '13px',
+      })
+      .setInteractive({ useHandCursor: true })
+      .on(
+        'pointerdown',
+        (
+          _p: Phaser.Input.Pointer,
+          _x: number,
+          _y: number,
+          ev: Phaser.Types.Input.EventData,
+        ) => {
+          ev.stopPropagation();
+          void this.persist('manual');
+        },
+      );
+
+    // 자동 저장 (Code.md 확정: 30초 주기)
+    this.time.addEvent({
+      delay: CONFIG.autosaveMs,
+      loop: true,
+      callback: () => void this.persist('auto'),
+    });
+  }
+
+  private async persist(kind: 'auto' | 'manual'): Promise<void> {
+    const ok = await putSave(this.sim);
+    if (kind === 'manual') {
+      this.toast.setText(ok ? '저장됨' : '저장 실패 — 잠시 후 다시 시도');
+    } else if (!ok) {
+      this.toast.setText('자동저장 실패');
+    }
   }
 
   private refreshToolButtons(): void {
