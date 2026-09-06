@@ -125,6 +125,9 @@ function runAuth(): Promise<void> {
       $('#row-confirm').hidden = mode === 'login';
       $('#auth-title').textContent = mode === 'login' ? '로그인' : '회원가입';
       submit.textContent = mode === 'login' ? '로그인' : '회원가입';
+      // 모드 전환 시 입력값 전부 비움 (아이디/비밀번호/확인) — 로그인↔회원가입 양방향
+      idInput.value = '';
+      pwInput.value = '';
       confirmInput.value = '';
       refresh();
     }
@@ -137,8 +140,7 @@ function runAuth(): Promise<void> {
       if (mode === 'signup') {
         const r = await signUp(id, pw);
         if (r.ok) {
-          setMode('login');
-          pwInput.value = '';
+          setMode('login'); // setMode가 아이디/비밀번호/확인 전부 비움
           err.classList.add('ok');
           err.textContent = '회원가입 완료. 로그인해 주세요.';
         } else {
@@ -158,10 +160,19 @@ function runAuth(): Promise<void> {
       err.textContent = r.error;
     }
 
+    // 로그인 모드에서 아이디/비밀번호가 모두 채워졌을 때 Enter → 로그인
+    function onKeydown(e: KeyboardEvent): void {
+      if (e.key === 'Enter' && mode === 'login' && !submit.disabled) {
+        e.preventDefault();
+        void onSubmit();
+      }
+    }
+
     function cleanup(): void {
       $('#tab-login').onclick = null;
       $('#tab-signup').onclick = null;
       idInput.oninput = pwInput.oninput = confirmInput.oninput = null;
+      idInput.onkeydown = pwInput.onkeydown = null;
       submit.onclick = null;
     }
 
@@ -170,11 +181,11 @@ function runAuth(): Promise<void> {
     idInput.oninput = refresh;
     pwInput.oninput = refresh;
     confirmInput.oninput = refresh;
+    idInput.onkeydown = onKeydown;
+    pwInput.onkeydown = onKeydown;
     submit.onclick = () => void onSubmit();
 
-    idInput.value = '';
-    pwInput.value = '';
-    setMode('login');
+    setMode('login'); // 입력값 초기화 포함
   });
 }
 

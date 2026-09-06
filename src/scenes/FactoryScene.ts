@@ -2,7 +2,7 @@
 import Phaser from 'phaser';
 import { CONFIG } from '../data/config';
 import { gradeToTicks } from '../data/speed';
-import { Tile } from '../sim/grid';
+import { DIR_ARROW, DIR_VEC, Dir, Tile } from '../sim/grid';
 import {
   PlaceResult,
   SimState,
@@ -15,6 +15,11 @@ import {
 } from '../sim/sim';
 
 type Tool = 'conveyor' | 'node' | 'exporter' | 'remove';
+
+// 설치 전 회전 순서 (R 키). 상 → 우 → 하 → 좌 → 반복.
+const DIR_CYCLE: readonly Dir[] = ['N', 'E', 'S', 'W'];
+const nextDir = (d: Dir): Dir => DIR_CYCLE[(DIR_CYCLE.indexOf(d) + 1) % DIR_CYCLE.length];
+const DIRECTIONAL_TOOLS: ReadonlySet<Tool> = new Set<Tool>(['conveyor', 'node']);
 
 const CELL = 44;
 const ORIGIN_X = 190;
@@ -35,13 +40,14 @@ const TOOL_LABEL: Record<Tool, string> = {
   conveyor: '컨베이어(10G)',
   node: 'Node(10G)',
   exporter: 'Exporter(10G)',
-  remove: '철거',
+  remove: '철거(10G)', // 철거비 = 설치비 (Obsidian). 임시 =10
 };
 
 export class FactoryScene extends Phaser.Scene {
   private sim!: SimState;
   private acc = 0;
   private tool: Tool = 'conveyor';
+  private dir: Dir = 'E'; // 설치할 컨베이어/Node의 방향 (R로 회전)
 
   private gfx!: Phaser.GameObjects.Graphics;
   private hud!: Phaser.GameObjects.Text;
@@ -62,10 +68,12 @@ export class FactoryScene extends Phaser.Scene {
       fontFamily: 'monospace',
     });
 
-    this.add.text(16, 74, '[Node] 검정  [Exporter] 회색  [컨베이어] 노랑=가동  [자원] 파란 점', {
-      color: '#555',
-      fontSize: '12px',
-    });
+    this.add.text(
+      16,
+      74,
+      '[Node] 검정  [Exporter] 회색  [컨베이어] 노랑=가동  [자원] 파란 점  ·  R = 설치 방향 회전',
+      { color: '#555', fontSize: '12px' },
+    );
 
     this.toast = this.add
       .text(400, 566, '', { color: '#c00', fontSize: '14px' })
@@ -95,6 +103,9 @@ export class FactoryScene extends Phaser.Scene {
     this.refreshToolButtons();
 
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => this.onGridClick(pointer));
+    this.input.keyboard?.on('keydown-R', () => {
+      this.dir = nextDir(this.dir);
+    });
   }
 
   private refreshToolButtons(): void {
@@ -112,10 +123,10 @@ export class FactoryScene extends Phaser.Scene {
     let result: PlaceResult;
     switch (this.tool) {
       case 'conveyor':
-        result = placeConveyor(this.sim, tile);
+        result = placeConveyor(this.sim, tile, this.dir);
         break;
       case 'node':
-        result = placeBuilding(this.sim, 'node', tile, 'chip');
+        result = placeBuilding(this.sim, 'node', tile, 'chip', this.dir);
         break;
       case 'exporter':
         result = placeBuilding(this.sim, 'exporter', tile);
@@ -150,6 +161,24 @@ export class FactoryScene extends Phaser.Scene {
     };
   }
 
+  // 타일 중앙에 진행 방향을 가리키는 작은 삼각형
+  private drawDirTriangle(cx: number, cy: number, d: Dir, color: number): void {
+    const [dx, dy] = DIR_VEC[d];
+    const h = 7;
+    const tip = { x: cx + dx * h, y: cy + dy * h };
+    const back = { x: cx - dx * h, y: cy - dy * h };
+    const perp = { x: -dy * h, y: dx * h };
+    this.gfx.fillStyle(color, 1);
+    this.gfx.fillTriangle(
+      tip.x,
+      tip.y,
+      back.x + perp.x,
+      back.y + perp.y,
+      back.x - perp.x,
+      back.y - perp.y,
+    );
+  }
+
   private draw(): void {
     const g = this.gfx;
     g.clear();
@@ -178,8 +207,13 @@ export class FactoryScene extends Phaser.Scene {
         const on = activeTiles.has(`${p.tile[0]},${p.tile[1]}`);
         g.fillStyle(on ? COLOR.conveyorActive : COLOR.conveyor, 1);
         g.fillRect(c.x - CELL / 2 + 4, c.y - CELL / 2 + 4, CELL - 8, CELL - 8);
+        this.drawDirTriangle(c.x, c.y, p.dir, 0x222222); // 방향 화살표 (어두운색)
+      } else if (p.kind === 'node') {
+        g.fillStyle(COLOR.node, 1);
+        g.fillRect(c.x - CELL / 2 + 2, c.y - CELL / 2 + 2, CELL - 4, CELL - 4);
+        this.drawDirTriangle(c.x, c.y, p.dir, 0xffffff); // 방향 화살표 (밝은색)
       } else {
-        g.fillStyle(p.kind === 'node' ? COLOR.node : COLOR.exporter, 1);
+        g.fillStyle(COLOR.exporter, 1);
         g.fillRect(c.x - CELL / 2 + 2, c.y - CELL / 2 + 2, CELL - 4, CELL - 4);
       }
     }
@@ -199,8 +233,10 @@ export class FactoryScene extends Phaser.Scene {
       g.fillCircle(a.x + (b.x - a.x) * k, a.y + (b.y - a.y) * k, 5);
     }
 
-    this.hud.setText(
-      `골드 ${this.sim.gold}G    틱 ${this.sim.tick}    무료 컨베이어 ${this.sim.freeConveyors}    도구 [${this.tool}]`,
-    );
+    // 틱 카운터·무료 컨베이어 표시는 제거 (무료 컨베이어 UI는 M7에서 다룸). 로직은 유지.
+    const dirHint = DIRECTIONAL_TOOLS.has(this.tool)
+      ? `    방향 [${DIR_ARROW[this.dir]}] (R 회전)`
+      : '';
+    this.hud.setText(`골드 ${this.sim.gold}G    도구 [${this.tool}]${dirHint}`);
   }
 }

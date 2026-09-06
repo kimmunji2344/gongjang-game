@@ -10,8 +10,9 @@ export const CONFIG = {
   buildingCost: 10,       // 임시 =10 (Node/Exporter 추가 구매)
 
   // 시작 킷: Node(칩) 1 + Exporter 1 배치. 사이 3칸은 플레이어가 무료 컨베이어로 연결.
+  // 칩 Node는 동쪽(Exporter 방향)을 향함. 플레이어가 컨베이어 3개를 동쪽 방향으로 이어주면 연결됨.
   startKit: {
-    node: { resource: 'chip', tile: [2, 4] as readonly [number, number] },
+    node: { resource: 'chip', tile: [2, 4] as readonly [number, number], dir: 'E' as const },
     exporter: { tile: [6, 4] as readonly [number, number] },
   },
 } as const;
