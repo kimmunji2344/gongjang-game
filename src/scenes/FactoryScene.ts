@@ -1,26 +1,33 @@
-// M1 렌더 + 입력. 그래픽은 전부 플레이스홀더 (M7에서 일괄 교체 예정).
+// M1~M2 렌더 + 입력. 그래픽은 전부 플레이스홀더 (M7에서 일괄 교체 예정).
 import Phaser from 'phaser';
 import { CONFIG } from '../data/config';
+import { RESOURCES } from '../data/resources';
 import { gradeToTicks } from '../data/speed';
 import { DIR_ARROW, DIR_VEC, Dir, Tile } from '../sim/grid';
 import {
   PlaceResult,
   SimState,
+  computeRoutes,
   findPath,
   initialState,
   placeBuilding,
+  placeConverter,
   placeConveyor,
+  placeStorage,
   removePlaceable,
+  shutdownInfo,
   step,
+  stoppedPlaceables,
+  ventConverter,
 } from '../sim/sim';
 import { putSave } from '../net/save';
 
-type Tool = 'conveyor' | 'node' | 'exporter' | 'remove';
+type Tool = 'conveyor' | 'node' | 'exporter' | 'converter' | 'storage' | 'vent' | 'remove';
 
 // 설치 전 회전 순서 (R 키). 상 → 우 → 하 → 좌 → 반복.
 const DIR_CYCLE: readonly Dir[] = ['N', 'E', 'S', 'W'];
 const nextDir = (d: Dir): Dir => DIR_CYCLE[(DIR_CYCLE.indexOf(d) + 1) % DIR_CYCLE.length];
-const DIRECTIONAL_TOOLS: ReadonlySet<Tool> = new Set<Tool>(['conveyor', 'node']);
+const DIRECTIONAL_TOOLS: ReadonlySet<Tool> = new Set<Tool>(['conveyor', 'node', 'converter']);
 
 const CELL = 44;
 const ORIGIN_X = 190;
@@ -31,17 +38,34 @@ const COLOR = {
   gridLine: 0xcccccc,
   node: 0x333333,
   exporter: 0x888888,
+  converter: 0x8844aa,
+  storage: 0x22aa88,
   conveyor: 0xdddddd,
   conveyorActive: 0xf0c000,
   cargo: 0x2266cc,
+  shutdown: 0xcc2222,
 } as const;
 
-const TOOLS: readonly Tool[] = ['conveyor', 'node', 'exporter', 'remove'];
+// M2 임시: Node 도구가 설치할 자원을 N 키로 순환 (칩 → A1 → A2)
+const NODE_RESOURCES: readonly string[] = ['chip', 'A1', 'A2'];
+
+const TOOLS: readonly Tool[] = [
+  'conveyor',
+  'node',
+  'exporter',
+  'converter',
+  'storage',
+  'vent',
+  'remove',
+];
 const TOOL_LABEL: Record<Tool, string> = {
-  conveyor: '컨베이어(10G)',
-  node: 'Node(10G)',
-  exporter: 'Exporter(10G)',
-  remove: '철거(10G)', // 철거비 = 설치비 (Obsidian). 임시 =10
+  conveyor: '컨베이어',
+  node: 'Node',
+  exporter: 'Exporter',
+  converter: 'Converter',
+  storage: 'Storage',
+  vent: '긴급배출',
+  remove: '철거',
 };
 
 export class FactoryScene extends Phaser.Scene {
@@ -49,10 +73,12 @@ export class FactoryScene extends Phaser.Scene {
   private startSave: SimState | null = null; // 서버에서 불러온 세이브 (없으면 새 게임)
   private acc = 0;
   private tool: Tool = 'conveyor';
-  private dir: Dir = 'E'; // 설치할 컨베이어/Node의 방향 (R로 회전)
+  private dir: Dir = 'E'; // 설치할 컨베이어/Node/Converter의 방향 (R로 회전)
+  private nodeResIdx = 0; // Node 도구가 설치할 자원 (N 키로 순환)
 
   private gfx!: Phaser.GameObjects.Graphics;
   private hud!: Phaser.GameObjects.Text;
+  private statusText!: Phaser.GameObjects.Text;
   private toast!: Phaser.GameObjects.Text;
   private toolButtons: Phaser.GameObjects.Text[] = [];
 
@@ -77,9 +103,16 @@ export class FactoryScene extends Phaser.Scene {
     this.add.text(
       16,
       74,
-      '[Node] 검정  [Exporter] 회색  [컨베이어] 노랑=가동  [자원] 파란 점  ·  R = 설치 방향 회전',
-      { color: '#555', fontSize: '12px' },
+      '[Node] 검정  [Exporter] 회색  [Converter] 보라  [Storage] 청록  ·  R = 방향 회전  ·  N = Node 자원  ·  설치/철거비 10G',
+      { color: '#555', fontSize: '11px' },
     );
+
+    this.statusText = this.add.text(636, 100, '', {
+      color: '#333',
+      fontSize: '11px',
+      fontFamily: 'monospace',
+      wordWrap: { width: 160 },
+    });
 
     this.toast = this.add
       .text(400, 566, '', { color: '#c00', fontSize: '14px' })
@@ -87,11 +120,11 @@ export class FactoryScene extends Phaser.Scene {
 
     TOOLS.forEach((t, i) => {
       const btn = this.add
-        .text(16 + i * 128, 44, TOOL_LABEL[t], {
+        .text(16 + i * 96, 44, TOOL_LABEL[t], {
           color: '#111',
           backgroundColor: '#e6e6e6',
-          padding: { x: 8, y: 4 },
-          fontSize: '13px',
+          padding: { x: 6, y: 4 },
+          fontSize: '12px',
         })
         .setInteractive({ useHandCursor: true })
         .on('pointerdown', (
@@ -111,6 +144,9 @@ export class FactoryScene extends Phaser.Scene {
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => this.onGridClick(pointer));
     this.input.keyboard?.on('keydown-R', () => {
       this.dir = nextDir(this.dir);
+    });
+    this.input.keyboard?.on('keydown-N', () => {
+      this.nodeResIdx = (this.nodeResIdx + 1) % NODE_RESOURCES.length;
     });
 
     // 수동 저장 버튼 (플레이스홀더 — M7 재디자인)
@@ -170,10 +206,19 @@ export class FactoryScene extends Phaser.Scene {
         result = placeConveyor(this.sim, tile, this.dir);
         break;
       case 'node':
-        result = placeBuilding(this.sim, 'node', tile, 'chip', this.dir);
+        result = placeBuilding(this.sim, 'node', tile, NODE_RESOURCES[this.nodeResIdx], this.dir);
         break;
       case 'exporter':
         result = placeBuilding(this.sim, 'exporter', tile);
+        break;
+      case 'converter':
+        result = placeConverter(this.sim, tile, this.dir);
+        break;
+      case 'storage':
+        result = placeStorage(this.sim, tile);
+        break;
+      case 'vent':
+        result = ventConverter(this.sim, tile);
         break;
       case 'remove':
         result = removePlaceable(this.sim, tile);
@@ -237,25 +282,39 @@ export class FactoryScene extends Phaser.Scene {
       g.lineBetween(ORIGIN_X, py, ORIGIN_X + CONFIG.grid.w * CELL, py);
     }
 
-    // 가동 중인 컨베이어 타일 집합
+    // 가동 중인(막히지 않은) 경로의 컨베이어 타일 집합
+    const routes = computeRoutes(this.sim.placeables);
     const activeTiles = new Set<string>();
-    for (const p of this.sim.placeables) {
-      if (p.kind !== 'node') continue;
-      const path = findPath(this.sim.placeables, p);
-      if (path) path.slice(0, -1).forEach((t) => activeTiles.add(`${t[0]},${t[1]}`));
+    for (const route of routes.values()) {
+      if (route.sink === 'blocked') continue;
+      route.path.slice(0, -1).forEach((t) => activeTiles.add(`${t[0]},${t[1]}`));
     }
+
+    const shut = shutdownInfo(this.sim);
+    const stopped = stoppedPlaceables(this.sim);
 
     for (const p of this.sim.placeables) {
       const c = this.center(p.tile);
       if (p.kind === 'conveyor') {
-        const on = activeTiles.has(`${p.tile[0]},${p.tile[1]}`);
+        const on = activeTiles.has(`${p.tile[0]},${p.tile[1]}`) && !stopped.has(p.id);
         g.fillStyle(on ? COLOR.conveyorActive : COLOR.conveyor, 1);
         g.fillRect(c.x - CELL / 2 + 4, c.y - CELL / 2 + 4, CELL - 8, CELL - 8);
-        this.drawDirTriangle(c.x, c.y, p.dir, 0x222222); // 방향 화살표 (어두운색)
+        this.drawDirTriangle(c.x, c.y, p.dir, 0x222222);
       } else if (p.kind === 'node') {
-        g.fillStyle(COLOR.node, 1);
+        g.fillStyle(stopped.has(p.id) ? COLOR.shutdown : COLOR.node, 1);
         g.fillRect(c.x - CELL / 2 + 2, c.y - CELL / 2 + 2, CELL - 4, CELL - 4);
-        this.drawDirTriangle(c.x, c.y, p.dir, 0xffffff); // 방향 화살표 (밝은색)
+        this.drawDirTriangle(c.x, c.y, p.dir, 0xffffff);
+      } else if (p.kind === 'converter') {
+        g.fillStyle(COLOR.converter, 1);
+        g.fillRect(c.x - CELL / 2 + 2, c.y - CELL / 2 + 2, CELL - 4, CELL - 4);
+        this.drawDirTriangle(c.x, c.y, p.dir, 0xffffff);
+        if (shut[p.id]) {
+          g.lineStyle(3, COLOR.shutdown, 1);
+          g.strokeRect(c.x - CELL / 2 + 1, c.y - CELL / 2 + 1, CELL - 2, CELL - 2);
+        }
+      } else if (p.kind === 'storage') {
+        g.fillStyle(COLOR.storage, 1);
+        g.fillRect(c.x - CELL / 2 + 2, c.y - CELL / 2 + 2, CELL - 4, CELL - 4);
       } else {
         g.fillStyle(COLOR.exporter, 1);
         g.fillRect(c.x - CELL / 2 + 2, c.y - CELL / 2 + 2, CELL - 4, CELL - 4);
@@ -265,11 +324,11 @@ export class FactoryScene extends Phaser.Scene {
     const perTile = gradeToTicks(10, CONFIG.tickHz);
     g.fillStyle(COLOR.cargo, 1);
     for (const cargo of this.sim.cargo) {
-      const node = this.sim.placeables.find((p) => p.id === cargo.nodeId);
-      if (!node) continue;
-      const path = findPath(this.sim.placeables, node);
+      const src = this.sim.placeables.find((p) => p.id === cargo.sourceId);
+      if (!src) continue;
+      const path = findPath(this.sim.placeables, src);
       if (!path || cargo.index >= path.length) continue;
-      const from = cargo.index === 0 ? node.tile : path[cargo.index - 1];
+      const from = cargo.index === 0 ? src.tile : path[cargo.index - 1];
       const to = path[cargo.index];
       const a = this.center(from);
       const b = this.center(to);
@@ -277,10 +336,33 @@ export class FactoryScene extends Phaser.Scene {
       g.fillCircle(a.x + (b.x - a.x) * k, a.y + (b.y - a.y) * k, 5);
     }
 
-    // 틱 카운터·무료 컨베이어 표시는 제거 (무료 컨베이어 UI는 M7에서 다룸). 로직은 유지.
-    const dirHint = DIRECTIONAL_TOOLS.has(this.tool)
-      ? `    방향 [${DIR_ARROW[this.dir]}] (R 회전)`
-      : '';
-    this.hud.setText(`골드 ${this.sim.gold}G    도구 [${this.tool}]${dirHint}`);
+    this.drawStatusText(shut);
+
+    const dirHint = DIRECTIONAL_TOOLS.has(this.tool) ? `  방향 [${DIR_ARROW[this.dir]}]` : '';
+    const nodeHint = this.tool === 'node' ? `  자원 [${NODE_RESOURCES[this.nodeResIdx]}]` : '';
+    this.hud.setText(`골드 ${this.sim.gold}G   도구 [${this.tool}]${dirHint}${nodeHint}`);
+  }
+
+  // 우측: Converter 재고 / Storage 적재 상태 (플레이스홀더 텍스트, M7 재디자인)
+  private drawStatusText(shut: Record<string, { resources: string[]; weight: number }>): void {
+    const lines: string[] = [];
+    for (const p of this.sim.placeables) {
+      if (p.kind === 'converter') {
+        const bl = this.sim.converterBacklog[p.id] ?? {};
+        const parts = Object.entries(bl).map(([r, n]) => `${RESOURCES[r]?.name ?? r}x${n}`);
+        const s = shut[p.id];
+        lines.push(
+          `[C] ${p.id}\n  재고 ${parts.length ? parts.join(' ') : '없음'}` +
+            (s
+              ? `\n  * 셧다운 (${s.resources
+                  .map((r) => RESOURCES[r]?.name ?? r)
+                  .join(',')} 과잉, 무게 ${s.weight})`
+              : ''),
+        );
+      } else if (p.kind === 'storage') {
+        lines.push(`[S] ${p.id}\n  ${this.sim.storage[p.id] ?? 0}/${CONFIG.storageCapacity}`);
+      }
+    }
+    this.statusText.setText(lines.join('\n'));
   }
 }

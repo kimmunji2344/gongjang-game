@@ -6,12 +6,12 @@ import { saves } from '../db';
 export const saveRouter = Router();
 saveRouter.use(requireAuth);
 
-const SAVE_VERSION = 1; // 세이브 포맷 버전 (M2 가공·저장 들어오면 올려서 마이그레이션)
+const SAVE_VERSION = 2; // v2: M2 가공·저장·셧다운 필드 추가. v1 은 클라 normalizeState 가 흡수.
 
 saveRouter.get('/', async (req, res) => {
   const userId = (req as AuthedRequest).userId as string;
   const doc = await saves().findOne({ _id: userId });
-  res.json({ v: SAVE_VERSION, state: doc?.state ?? null });
+  res.json({ v: doc?.v ?? SAVE_VERSION, state: doc?.state ?? null });
 });
 
 saveRouter.put('/', async (req, res) => {

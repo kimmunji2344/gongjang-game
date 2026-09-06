@@ -17,8 +17,8 @@
 5. 미확정 수치는 src/data/ 에서만 관리. 현재 전부 임시값 10.
 
 ## 구조
-- src/data/   — config / resources / speed / authRules (데이터 표, 하드코딩 금지)
-- src/sim/    — grid(타일·설치물), sim(틱 시뮬·경로탐색·배치). Phaser 비의존 순수 TS
+- src/data/   — config / resources / recipes / speed / authRules (데이터 표, 하드코딩 금지)
+- src/sim/    — grid(타일·설치물: node/exporter/conveyor/converter/storage), sim(틱 시뮬·그래프 라우팅·가공·셧다운·배치). Phaser 비의존 순수 TS
 - src/auth/   — api (M4 실서버 인증 클라이언트, /api/auth/* 호출)
 - src/net/    — save (서버 세이브 로드/저장)
 - src/ui/     — screens (메뉴/로그인/회원가입/로딩 DOM 화면 + 흐름)
@@ -33,4 +33,7 @@
 - npm run build    타입체크 + 빌드
 - npm test         클라 로직 테스트  /  npm --prefix server test  서버 테스트
 
-## 현재: M4 단계 A 완료 (실 인증 + 세이브, 로컬). 단계 B = GitHub 원격 + Render 배포 대기. M2(가공)는 건너뜀.
+## 현재
+- M4 단계 A 완료 (실 인증 + 세이브, 로컬). 단계 B = GitHub 원격 + Render 배포 대기.
+- M2 완료 (가공·저장·셧다운, 로컬). 자원/가공품/레시피는 임시 코드(A1/A2/B1/C1, R1/R2) — 용어정리 확정 시 src/data/{resources,recipes}.ts 교체.
+- 세이브 v2. 다음 후보: M3(성장·확장) 또는 M4 단계 B(배포).

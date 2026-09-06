@@ -8,7 +8,13 @@ export const CONFIG = {
   freeConveyors: 3,       // Obsidian 명시값: 무료 컨베이어 3개
   conveyorCost: 10,       // 임시 =10 (타일당)
   buildingCost: 10,       // 임시 =10 (Node/Exporter 추가 구매)
+  converterCost: 10,      // 임시 =10 (Converter 설치/철거)
+  storageCost: 10,        // 임시 =10 (Storage 설치/철거)
   autosaveMs: 30000,      // 자동저장 주기 (Code.md 확정: 30초)
+
+  // M2 가공·저장·셧다운 (전부 임시 =10, Obsidian 확정 시 교체)
+  storageCapacity: 10,   // Storage 1개가 담는 최대 개수
+  shutdownWeight: 10,    // Converter 재고 누적 무게 한도 — 도달 시 셧다운
 
   // 시작 킷: Node(칩) 1 + Exporter 1 배치. 사이 3칸은 플레이어가 무료 컨베이어로 연결.
   // 칩 Node는 동쪽(Exporter 방향)을 향함. 플레이어가 컨베이어 3개를 동쪽 방향으로 이어주면 연결됨.

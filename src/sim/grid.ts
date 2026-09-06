@@ -25,7 +25,12 @@ export type Placeable =
       readonly dir: Dir;
     }
   | { readonly kind: 'exporter'; readonly id: string; readonly tile: Tile }
-  | { readonly kind: 'conveyor'; readonly id: string; readonly tile: Tile; readonly dir: Dir };
+  | { readonly kind: 'conveyor'; readonly id: string; readonly tile: Tile; readonly dir: Dir }
+  // Converter: dir = 출력 방향 (Node 와 동일 규칙 — 설치 전 회전, 설치 후 고정).
+  //            나머지 3면 중 방향이 맞는 컨베이어가 입력.
+  | { readonly kind: 'converter'; readonly id: string; readonly tile: Tile; readonly dir: Dir }
+  // Storage: 방향 없음 (Exporter 처럼 어느 방향에서 오는 컨베이어든 받음).
+  | { readonly kind: 'storage'; readonly id: string; readonly tile: Tile };
 
 export const tileEq = (a: Tile, b: Tile): boolean => a[0] === b[0] && a[1] === b[1];
 export const tileKey = (t: Tile): string => `${t[0]},${t[1]}`;

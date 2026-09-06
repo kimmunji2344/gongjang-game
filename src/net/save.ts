@@ -1,6 +1,6 @@
 // 서버 세이브 불러오기/저장. 토큰은 auth/api 에서 가져온다. 계정당 1슬롯.
 import { getToken, logOut } from '../auth/api';
-import type { SimState } from '../sim/sim';
+import { normalizeState, type SimState } from '../sim/sim';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:3000';
 
@@ -22,7 +22,10 @@ export async function loadSave(): Promise<LoadResult> {
     }
     if (!r.ok) return { status: 'error', message: `서버 오류 (${r.status})` };
     const data = (await r.json().catch(() => ({}))) as { state?: unknown };
-    return { status: 'ok', state: isValidState(data.state) ? (data.state as SimState) : null };
+    return {
+      status: 'ok',
+      state: isValidState(data.state) ? normalizeState(data.state as SimState) : null,
+    };
   } catch {
     return { status: 'error', message: '서버에 연결할 수 없습니다' };
   }
