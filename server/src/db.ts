@@ -8,7 +8,16 @@ export type SaveDoc = { _id: string; v: number; state: unknown; updatedAt: Date 
 let db: Db | null = null;
 
 export async function connectDb(): Promise<void> {
-  const client = new MongoClient(requireEnv('MONGODB_URI'));
+  // .trim() 으로 앞뒤 공백·BOM 제거 (대시보드에 값 붙여넣을 때 흔한 실수).
+  const uri = requireEnv('MONGODB_URI').trim();
+  if (!/^mongodb(\+srv)?:\/\//.test(uri)) {
+    const scheme = uri.includes('://') ? uri.slice(0, uri.indexOf('://') + 3) : uri.slice(0, 15);
+    throw new Error(
+      `MONGODB_URI 형식 오류 — "mongodb+srv://" 로 시작해야 합니다. ` +
+        `현재 시작 부분: "${scheme}" · 'MONGODB_URI=' 접두어나 따옴표가 붙지 않았는지 확인하세요.`,
+    );
+  }
+  const client = new MongoClient(uri);
   await client.connect();
   db = client.db('gongjang');
   await db.command({ ping: 1 });
