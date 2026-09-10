@@ -1,8 +1,13 @@
 // 게임 전역 설정. 미확정 수치는 임시값 10 (사용자 규칙 2026-09-06).
 
 export const CONFIG = {
-  grid: { w: 10, h: 10 }, // 임시: Obsidian "n x m" 미정 → =10
+  grid: { w: 10, h: 10 }, // 임시: Obsidian "n x m" 미정 → =10 (= 구역 1개 크기)
   tickHz: 10,             // 초당 시뮬 틱 (속도 등급 0.1초 = 1틱)
+
+  // M3-A 확장 구역 (십자 3×3). 중앙 구역 = 타일 [0..9, 0..9], 시작부터 소유.
+  zone: { size: 10, span: 1 }, // span=1 → 구역 좌표 -1..1 (3×3)
+  zoneCostBase: 10,            // 구역 비용 = base × 현재 소유 구역 수 (선형 임시, 실제 지수곡선은 밸런싱 때)
+  resourceUnlockChips: 10,     // 누적 칩 판매 이만큼이면 A1·A2 해금 (임시)
 
   startingGold: 0,        // Obsidian 명시값
   freeConveyors: 3,       // Obsidian 명시값: 무료 컨베이어 3개

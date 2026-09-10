@@ -16,10 +16,10 @@ import {
   Dir,
   Placeable,
   Tile,
-  inBounds,
   placeableAt,
   tileKey,
 } from './grid';
+import { CENTER_ZONE, buyableZones, inOwnedZone } from './zones';
 
 // 한 타일에서 방향 d로 한 칸 이동한 좌표
 const stepTile = (t: Tile, d: Dir): Tile => [t[0] + DIR_VEC[d][0], t[1] + DIR_VEC[d][1]];
@@ -42,6 +42,10 @@ export type SimState = {
   readonly converterBacklog: Readonly<Record<string, Readonly<Record<string, number>>>>; // convId → resource → 개수
   readonly storage: Readonly<Record<string, number>>;            // storageId → 저장된 개수
   readonly freeConveyors: number;
+  // M3-A 확장/해금
+  readonly ownedZones: readonly string[];        // 소유 구역 id ("zx,zy"), 시작 ["0,0"]
+  readonly unlockedResources: readonly string[]; // Node 로 배치 가능한 원자재, 시작 ["chip"]
+  readonly chipSold: number;                     // 누적 칩 판매 개수 (자원 해금 게이트용)
 };
 
 const CONVEYOR_GRADE = 10; // 임시 =10: 컨베이어 이동 속도 등급 (오브젝트별 매핑표 미정)
@@ -66,10 +70,15 @@ export function initialState(): SimState {
     converterBacklog: {},
     storage: {},
     freeConveyors: CONFIG.freeConveyors,
+    ownedZones: [CENTER_ZONE],
+    unlockedResources: ['chip'],
+    chipSold: 0,
   };
 }
 
-// 불러온 세이브를 현재 스키마로 맞춘다 (v1 → v2: 신규 필드 채움 + Cargo.nodeId → sourceId).
+// 불러온 세이브를 현재 스키마로 맞춘다.
+//  v1 → v2 : M2 필드(converter*/storage) 채움 + Cargo.nodeId → sourceId
+//  v2 → v3 : M3-A 필드(ownedZones/unlockedResources/chipSold) 채움
 export function normalizeState(s: SimState): SimState {
   type LegacyCargo = Cargo & { nodeId?: string };
   return {
@@ -84,6 +93,9 @@ export function normalizeState(s: SimState): SimState {
     converterCooldown: s.converterCooldown ?? {},
     converterBacklog: s.converterBacklog ?? {},
     storage: s.storage ?? {},
+    ownedZones: s.ownedZones?.length ? s.ownedZones : [CENTER_ZONE],
+    unlockedResources: s.unlockedResources?.length ? s.unlockedResources : ['chip'],
+    chipSold: s.chipSold ?? 0,
   };
 }
 
@@ -232,10 +244,16 @@ export function step(state: SimState): SimState {
   const perTile = gradeToTicks(CONVEYOR_GRADE, CONFIG.tickHz);
 
   let gold = state.gold;
+  let chipSold = state.chipSold;
   const nextCargo: Cargo[] = [];
   const backlog: Record<string, Record<string, number>> = {};
   for (const [k, v] of Object.entries(state.converterBacklog)) backlog[k] = { ...v };
   const storage: Record<string, number> = { ...state.storage };
+
+  const sell = (resource: string): void => {
+    gold += RESOURCES[resource].sellPrice;
+    if (resource === 'chip') chipSold += 1;
+  };
 
   const addBacklog = (convId: string, resource: string): void => {
     const b = backlog[convId] ?? (backlog[convId] = {});
@@ -252,7 +270,7 @@ export function step(state: SimState): SimState {
     }
     // 종착에 직접 인접 (경유 컨베이어 0칸)
     if (route.sink === 'exporter') {
-      gold += RESOURCES[resource].sellPrice;
+      sell(resource);
       return true;
     }
     if (route.sink === 'converter' && route.sinkId) {
@@ -290,7 +308,7 @@ export function step(state: SimState): SimState {
     }
     // 다음 칸이 종착 sink
     if (route.sink === 'exporter') {
-      gold += RESOURCES[c.resource].sellPrice;
+      sell(c.resource);
     } else if (route.sink === 'converter' && route.sinkId) {
       addBacklog(route.sinkId, c.resource);
     } else if (route.sink === 'storage' && route.sinkId) {
@@ -365,15 +383,23 @@ export function step(state: SimState): SimState {
     if (Object.keys(trimmed).length > 0) converterBacklog[id] = trimmed;
   }
 
+  // 5) 자원 해금 — 누적 칩 판매가 한도에 도달하면 A1·A2 해금 (임시 대상, 실제 이름은 용어정리 확정 시)
+  const unlockedResources =
+    chipSold >= CONFIG.resourceUnlockChips && !state.unlockedResources.includes('A1')
+      ? [...state.unlockedResources, 'A1', 'A2']
+      : state.unlockedResources;
+
   return {
     ...state,
     tick: state.tick + 1,
     gold,
+    chipSold,
     cargo: nextCargo,
     nodeCooldown,
     converterCooldown,
     converterBacklog,
     storage,
+    unlockedResources,
   };
 }
 
@@ -393,8 +419,10 @@ function facesHeadOn(placeables: readonly Placeable[], tile: Tile, dir: Dir): bo
 
 const HEAD_ON_MSG = '마주보는 방향으로는 설치할 수 없습니다';
 
+const NOT_OWNED_MSG = '소유하지 않은 구역입니다';
+
 export function placeConveyor(state: SimState, tile: Tile, dir: Dir): PlaceResult {
-  if (!inBounds(tile, CONFIG.grid.w, CONFIG.grid.h)) return '맵 밖입니다';
+  if (!inOwnedZone(state.ownedZones, tile)) return NOT_OWNED_MSG;
   if (occupied(state, tile)) return '이미 설치물이 있습니다';
   if (facesHeadOn(state.placeables, tile, dir)) return HEAD_ON_MSG;
   const useFree = state.freeConveyors > 0;
@@ -419,8 +447,11 @@ export function placeBuilding(
   resource = 'chip',
   dir: Dir = 'E',
 ): PlaceResult {
-  if (!inBounds(tile, CONFIG.grid.w, CONFIG.grid.h)) return '맵 밖입니다';
+  if (!inOwnedZone(state.ownedZones, tile)) return NOT_OWNED_MSG;
   if (occupied(state, tile)) return '이미 설치물이 있습니다';
+  if (kind === 'node' && !state.unlockedResources.includes(resource)) {
+    return '해금되지 않은 자원입니다';
+  }
   if (state.gold < CONFIG.buildingCost) return `골드 부족 (필요 ${CONFIG.buildingCost}G)`;
   if (kind === 'node' && facesHeadOn(state.placeables, tile, dir)) return HEAD_ON_MSG;
 
@@ -446,7 +477,7 @@ export function placeBuilding(
 }
 
 export function placeConverter(state: SimState, tile: Tile, dir: Dir): PlaceResult {
-  if (!inBounds(tile, CONFIG.grid.w, CONFIG.grid.h)) return '맵 밖입니다';
+  if (!inOwnedZone(state.ownedZones, tile)) return NOT_OWNED_MSG;
   if (occupied(state, tile)) return '이미 설치물이 있습니다';
   if (facesHeadOn(state.placeables, tile, dir)) return HEAD_ON_MSG;
   if (state.gold < CONFIG.converterCost) return `골드 부족 (필요 ${CONFIG.converterCost}G)`;
@@ -461,7 +492,7 @@ export function placeConverter(state: SimState, tile: Tile, dir: Dir): PlaceResu
 }
 
 export function placeStorage(state: SimState, tile: Tile): PlaceResult {
-  if (!inBounds(tile, CONFIG.grid.w, CONFIG.grid.h)) return '맵 밖입니다';
+  if (!inOwnedZone(state.ownedZones, tile)) return NOT_OWNED_MSG;
   if (occupied(state, tile)) return '이미 설치물이 있습니다';
   if (state.gold < CONFIG.storageCost) return `골드 부족 (필요 ${CONFIG.storageCost}G)`;
   return {
@@ -484,6 +515,21 @@ export function ventConverter(state: SimState, tile: Tile): PlaceResult {
   const converterCooldown = { ...state.converterCooldown };
   delete converterCooldown[p.id];
   return { ...state, converterBacklog, converterCooldown };
+}
+
+// 다음 구역 확장 비용 = base × 현재 소유 구역 수 (선형 임시, 실제 지수곡선은 밸런싱 때).
+// ponytail: 선형 근사 — Obsidian 공식은 base × 성장률^(n-1).
+export function zoneCost(state: SimState): number {
+  return CONFIG.zoneCostBase * state.ownedZones.length;
+}
+
+// 확장 구역 구매 — 소유 구역과 변이 맞닿은 구역만. 코너는 인접 팔을 먼저 사야 가능(구조로 강제).
+export function buyZone(state: SimState, zoneId: string): PlaceResult {
+  if (state.ownedZones.includes(zoneId)) return '이미 소유한 구역입니다';
+  if (!buyableZones(state.ownedZones).includes(zoneId)) return '인접한 구역이 아닙니다';
+  const cost = zoneCost(state);
+  if (state.gold < cost) return `골드 부족 (필요 ${cost}G)`;
+  return { ...state, gold: state.gold - cost, ownedZones: [...state.ownedZones, zoneId] };
 }
 
 // 철거비 = 해당 설치물의 설치 비용과 동일 (Obsidian: "철거 비용은 설치 비용과 동일"). 임시 =10.

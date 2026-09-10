@@ -18,7 +18,7 @@
 
 ## 구조
 - src/data/   — config / resources / recipes / speed / authRules (데이터 표, 하드코딩 금지)
-- src/sim/    — grid(타일·설치물: node/exporter/conveyor/converter/storage), sim(틱 시뮬·그래프 라우팅·가공·셧다운·배치). Phaser 비의존 순수 TS
+- src/sim/    — grid(타일·설치물), zones(십자 3×3 확장 구역), sim(틱 시뮬·그래프 라우팅·가공·셧다운·배치·구역/해금). Phaser 비의존 순수 TS
 - src/auth/   — api (M4 실서버 인증 클라이언트, /api/auth/* 호출)
 - src/net/    — save (서버 세이브 로드/저장)
 - src/ui/     — screens (메뉴/로그인/회원가입/로딩 DOM 화면 + 흐름)
@@ -36,4 +36,5 @@
 ## 현재
 - M4 단계 A 완료 (실 인증 + 세이브, 로컬). 단계 B = GitHub 원격 + Render 배포 대기.
 - M2 완료 (가공·저장·셧다운, 로컬). 자원/가공품/레시피는 임시 코드(A1/A2/B1/C1, R1/R2) — 용어정리 확정 시 src/data/{resources,recipes}.ts 교체.
-- 세이브 v2. 다음 후보: M3(성장·확장) 또는 M4 단계 B(배포).
+- M3 단계 A 완료 (십자 3×3 구역 확장 + 칩판매 자원해금, 로컬). 구역비용 = 선형 임시 10×n. 단계 B(레벨링) 대기.
+- 세이브 v3. 다음 후보: M3 단계 B(업그레이드·Exporter레벨·tier판매가) 또는 M4 단계 B(배포).

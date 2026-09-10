@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { CONFIG } from '../src/data/config';
 import { gradeToSeconds } from '../src/data/speed';
 import { RESOURCES } from '../src/data/resources';
 import { findRecipe } from '../src/data/recipes';
@@ -12,6 +13,8 @@ import {
   placeStorage,
   removePlaceable,
   ventConverter,
+  buyZone,
+  zoneCost,
   shutdownSet,
   shutdownInfo,
   normalizeState,
@@ -172,7 +175,11 @@ describe('M2 레시피 매칭', () => {
 // A1 Node[1,1]↓ → 컨베이어[1,2]↓ → Converter[1,3](출력→) ,  A2 Node[1,5]↑ → 컨베이어[1,4]↑ → Converter[1,3]
 // Converter 출력 → 컨베이어[2,3]→ → Exporter[3,3]
 const converterRig = (): SimState => {
-  let s: SimState = { ...initialState(), gold: 100000 };
+  let s: SimState = {
+    ...initialState(),
+    gold: 100000,
+    unlockedResources: ['chip', 'A1', 'A2'], // M2 픽스처는 해금 상태 가정
+  };
   s = ok(placeBuilding(s, 'node', [1, 1], 'A1', 'S'));
   s = ok(placeConveyor(s, [1, 2], 'S'));
   s = ok(placeConverter(s, [1, 3], 'E'));
@@ -211,7 +218,11 @@ describe('M2 Converter 가공', () => {
 
 describe('M2 Storage', () => {
   it('용량까지만 채우고 초과분은 벨트에서 대기', () => {
-    let s: SimState = { ...initialState(), gold: 100000 };
+    let s: SimState = {
+    ...initialState(),
+    gold: 100000,
+    unlockedResources: ['chip', 'A1', 'A2'], // M2 픽스처는 해금 상태 가정
+  };
     s = ok(placeBuilding(s, 'node', [1, 1], 'A1', 'S'));
     s = ok(placeConveyor(s, [1, 2], 'S'));
     s = ok(placeConveyor(s, [1, 3], 'S'));
@@ -225,7 +236,11 @@ describe('M2 Storage', () => {
 describe('M2 셧다운 (재고 무게 기반) + 긴급 배출', () => {
   // A1 만 공급되는 Converter — R1(A1+A2)/R2(A1+B1) 어느 것도 못 돌려 재고가 쌓임
   const jamRig = (): SimState => {
-    let s: SimState = { ...initialState(), gold: 100000 };
+    let s: SimState = {
+    ...initialState(),
+    gold: 100000,
+    unlockedResources: ['chip', 'A1', 'A2'], // M2 픽스처는 해금 상태 가정
+  };
     s = ok(placeBuilding(s, 'node', [1, 1], 'A1', 'S'));
     s = ok(placeConveyor(s, [1, 2], 'S'));
     s = ok(placeConverter(s, [1, 3], 'E'));
@@ -267,5 +282,82 @@ describe('M2 세이브 마이그레이션 (v1 → v2)', () => {
     expect(v2.converterCooldown).toEqual({});
     expect(v2.storage).toEqual({});
     expect(v2.cargo[0].sourceId).toBe('node-1');
+  });
+});
+
+// ---- M3-A: 확장 구역 · 자원 해금 ------------------------------------------------
+
+describe('M3-A 확장 구역', () => {
+  it('시작: 중앙 구역만 소유, 자원은 칩만 해금', () => {
+    const s = initialState();
+    expect(s.ownedZones).toEqual(['0,0']);
+    expect(s.unlockedResources).toEqual(['chip']);
+    expect(zoneCost(s)).toBe(10); // 10 × 소유 1개
+  });
+
+  it('인접 팔 구역 구매 — 비용 = 10 × 소유 구역 수, 골드 차감', () => {
+    let s: SimState = { ...initialState(), gold: 100 };
+    const r = buyZone(s, '1,0'); // 동쪽 팔
+    if (typeof r === 'string') throw new Error(r);
+    s = r;
+    expect(s.ownedZones).toContain('1,0');
+    expect(s.gold).toBe(90); // 첫 구매 10
+    expect(zoneCost(s)).toBe(20); // 다음 구매 10 × 2
+  });
+
+  it('코너 구역은 인접 팔을 먼저 사야 구매 가능', () => {
+    let s: SimState = { ...initialState(), gold: 1000 };
+    expect(buyZone(s, '1,1')).toBe('인접한 구역이 아닙니다'); // 중앙과 변이 안 닿음
+    s = buyZone(s, '1,0') as SimState;
+    s = buyZone(s, '0,1') as SimState;
+    expect(typeof buyZone(s, '1,1')).not.toBe('string'); // 팔 2개 확보 → 코너 가능
+  });
+
+  it('골드 부족 / 이미 소유 / 범위 밖 구매 거부', () => {
+    expect(buyZone({ ...initialState(), gold: 5 }, '1,0')).toBe('골드 부족 (필요 10G)');
+    expect(buyZone({ ...initialState(), gold: 100 }, '0,0')).toBe('이미 소유한 구역입니다');
+    expect(buyZone({ ...initialState(), gold: 100 }, '2,0')).toBe('인접한 구역이 아닙니다'); // 3×3 밖
+  });
+
+  it('소유하지 않은 구역엔 설치 불가, 구매 후 가능', () => {
+    let s: SimState = { ...initialState(), gold: 100 };
+    expect(placeConveyor(s, [12, 4], 'E')).toBe('소유하지 않은 구역입니다'); // 동쪽 팔 타일
+    s = buyZone(s, '1,0') as SimState;
+    expect(typeof placeConveyor(s, [12, 4], 'E')).not.toBe('string');
+  });
+});
+
+describe('M3-A 자원 해금 (칩 판매)', () => {
+  it('해금 전에는 A1 배치 불가', () => {
+    const s: SimState = { ...initialState(), gold: 100 };
+    expect(placeBuilding(s, 'node', [1, 1], 'A1', 'S')).toBe('해금되지 않은 자원입니다');
+  });
+
+  it('칩 누적 판매가 한도 도달 → A1·A2 해금 → 배치 가능', () => {
+    let s = connectStartKit(initialState());
+    for (let i = 0; i < 500 && !s.unlockedResources.includes('A1'); i++) s = step(s);
+    expect(s.chipSold).toBeGreaterThanOrEqual(CONFIG.resourceUnlockChips);
+    expect(s.unlockedResources).toEqual(['chip', 'A1', 'A2']);
+    expect(typeof placeBuilding({ ...s, gold: 100 }, 'node', [1, 1], 'A1', 'S')).not.toBe('string');
+  });
+});
+
+describe('M3-A 세이브 마이그레이션 (v2 → v3)', () => {
+  it('normalizeState 가 구역/해금 필드를 채운다', () => {
+    const v2 = {
+      tick: 1,
+      gold: 0,
+      placeables: [],
+      cargo: [],
+      nodeCooldown: {},
+      converterCooldown: {},
+      converterBacklog: {},
+      storage: {},
+      freeConveyors: 0,
+    } as unknown as SimState;
+    const v3 = normalizeState(v2);
+    expect(v3.ownedZones).toEqual(['0,0']);
+    expect(v3.unlockedResources).toEqual(['chip']);
+    expect(v3.chipSold).toBe(0);
   });
 });

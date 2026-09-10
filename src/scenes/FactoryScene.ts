@@ -1,4 +1,4 @@
-// M1~M2 렌더 + 입력. 그래픽은 전부 플레이스홀더 (M7에서 일괄 교체 예정).
+// M1~M3 렌더 + 입력. 그래픽은 전부 플레이스홀더 (M7에서 일괄 교체 예정).
 import Phaser from 'phaser';
 import { CONFIG } from '../data/config';
 import { RESOURCES } from '../data/resources';
@@ -7,6 +7,7 @@ import { DIR_ARROW, DIR_VEC, Dir, Tile } from '../sim/grid';
 import {
   PlaceResult,
   SimState,
+  buyZone,
   computeRoutes,
   findPath,
   initialState,
@@ -19,10 +20,20 @@ import {
   step,
   stoppedPlaceables,
   ventConverter,
+  zoneCost,
 } from '../sim/sim';
+import { buyableZones, parseZone, zoneName, zoneOf, zoneTileBounds } from '../sim/zones';
 import { putSave } from '../net/save';
 
-type Tool = 'conveyor' | 'node' | 'exporter' | 'converter' | 'storage' | 'vent' | 'remove';
+type Tool =
+  | 'zone'
+  | 'conveyor'
+  | 'node'
+  | 'exporter'
+  | 'converter'
+  | 'storage'
+  | 'vent'
+  | 'remove';
 
 // 설치 전 회전 순서 (R 키). 상 → 우 → 하 → 좌 → 반복.
 const DIR_CYCLE: readonly Dir[] = ['N', 'E', 'S', 'W'];
@@ -32,10 +43,15 @@ const DIRECTIONAL_TOOLS: ReadonlySet<Tool> = new Set<Tool>(['conveyor', 'node', 
 const CELL = 44;
 const ORIGIN_X = 190;
 const ORIGIN_Y = 100;
+const VIEW_AREA = 452; // 격자를 그릴 정사각 영역 (px)
 const TICK_MS = 1000 / CONFIG.tickHz;
+const S = CONFIG.zone.size;
 
 const COLOR = {
   gridLine: 0xcccccc,
+  zoneBg: 0xfafafa,
+  zoneBorder: 0x999999,
+  buyable: 0x2288cc,
   node: 0x333333,
   exporter: 0x888888,
   converter: 0x8844aa,
@@ -46,10 +62,8 @@ const COLOR = {
   shutdown: 0xcc2222,
 } as const;
 
-// M2 임시: Node 도구가 설치할 자원을 N 키로 순환 (칩 → A1 → A2)
-const NODE_RESOURCES: readonly string[] = ['chip', 'A1', 'A2'];
-
 const TOOLS: readonly Tool[] = [
+  'zone',
   'conveyor',
   'node',
   'exporter',
@@ -59,6 +73,7 @@ const TOOLS: readonly Tool[] = [
   'remove',
 ];
 const TOOL_LABEL: Record<Tool, string> = {
+  zone: '구역',
   conveyor: '컨베이어',
   node: 'Node',
   exporter: 'Exporter',
@@ -68,13 +83,16 @@ const TOOL_LABEL: Record<Tool, string> = {
   remove: '철거',
 };
 
+type View = { minX: number; minY: number; cell: number; ox: number; oy: number };
+
 export class FactoryScene extends Phaser.Scene {
   private sim!: SimState;
   private startSave: SimState | null = null; // 서버에서 불러온 세이브 (없으면 새 게임)
   private acc = 0;
   private tool: Tool = 'conveyor';
   private dir: Dir = 'E'; // 설치할 컨베이어/Node/Converter의 방향 (R로 회전)
-  private nodeResIdx = 0; // Node 도구가 설치할 자원 (N 키로 순환)
+  private nodeResIdx = 0; // Node 도구가 설치할 자원 인덱스 (N 키로 순환, unlockedResources 기준)
+  private view: View = { minX: 0, minY: 0, cell: CELL, ox: ORIGIN_X, oy: ORIGIN_Y };
 
   private gfx!: Phaser.GameObjects.Graphics;
   private hud!: Phaser.GameObjects.Text;
@@ -107,11 +125,11 @@ export class FactoryScene extends Phaser.Scene {
       { color: '#555', fontSize: '11px' },
     );
 
-    this.statusText = this.add.text(636, 100, '', {
+    this.statusText = this.add.text(652, 100, '', {
       color: '#333',
       fontSize: '11px',
       fontFamily: 'monospace',
-      wordWrap: { width: 160 },
+      wordWrap: { width: 144 },
     });
 
     this.toast = this.add
@@ -120,11 +138,11 @@ export class FactoryScene extends Phaser.Scene {
 
     TOOLS.forEach((t, i) => {
       const btn = this.add
-        .text(16 + i * 96, 44, TOOL_LABEL[t], {
+        .text(16 + i * 88, 44, TOOL_LABEL[t], {
           color: '#111',
           backgroundColor: '#e6e6e6',
-          padding: { x: 6, y: 4 },
-          fontSize: '12px',
+          padding: { x: 5, y: 4 },
+          fontSize: '11px',
         })
         .setInteractive({ useHandCursor: true })
         .on('pointerdown', (
@@ -146,7 +164,8 @@ export class FactoryScene extends Phaser.Scene {
       this.dir = nextDir(this.dir);
     });
     this.input.keyboard?.on('keydown-N', () => {
-      this.nodeResIdx = (this.nodeResIdx + 1) % NODE_RESOURCES.length;
+      const n = this.sim.unlockedResources.length;
+      this.nodeResIdx = (this.nodeResIdx + 1) % n;
     });
 
     // 수동 저장 버튼 (플레이스홀더 — M7 재디자인)
@@ -177,6 +196,8 @@ export class FactoryScene extends Phaser.Scene {
       loop: true,
       callback: () => void this.persist('auto'),
     });
+
+    this.computeView();
   }
 
   private async persist(kind: 'auto' | 'manual'): Promise<void> {
@@ -194,19 +215,47 @@ export class FactoryScene extends Phaser.Scene {
     });
   }
 
+  // 소유 구역(+ 구역 도구일 때 구매 가능 구역)을 화면 영역에 맞춰 셀 크기·원점 계산
+  private computeView(): void {
+    const zids = [...this.sim.ownedZones];
+    if (this.tool === 'zone') zids.push(...buyableZones(this.sim.ownedZones));
+    const zx = zids.map((z) => parseZone(z)[0]);
+    const zy = zids.map((z) => parseZone(z)[1]);
+    const minZX = Math.min(...zx);
+    const minZY = Math.min(...zy);
+    const spanX = (Math.max(...zx) - minZX + 1) * S;
+    const spanY = (Math.max(...zy) - minZY + 1) * S;
+    const cell = Math.min(CELL, VIEW_AREA / spanX, VIEW_AREA / spanY);
+    this.view = {
+      minX: minZX * S,
+      minY: minZY * S,
+      cell,
+      ox: ORIGIN_X + (VIEW_AREA - cell * spanX) / 2,
+      oy: ORIGIN_Y + (VIEW_AREA - cell * spanY) / 2,
+    };
+  }
+
+  private nodeResource(): string {
+    const list = this.sim.unlockedResources;
+    return list[this.nodeResIdx % list.length] ?? 'chip';
+  }
+
   private onGridClick(pointer: Phaser.Input.Pointer): void {
-    const tx = Math.floor((pointer.x - ORIGIN_X) / CELL);
-    const ty = Math.floor((pointer.y - ORIGIN_Y) / CELL);
-    if (tx < 0 || ty < 0 || tx >= CONFIG.grid.w || ty >= CONFIG.grid.h) return;
+    const v = this.view;
+    const tx = v.minX + Math.floor((pointer.x - v.ox) / v.cell);
+    const ty = v.minY + Math.floor((pointer.y - v.oy) / v.cell);
     const tile: Tile = [tx, ty];
 
     let result: PlaceResult;
     switch (this.tool) {
+      case 'zone':
+        result = buyZone(this.sim, zoneOf(tile));
+        break;
       case 'conveyor':
         result = placeConveyor(this.sim, tile, this.dir);
         break;
       case 'node':
-        result = placeBuilding(this.sim, 'node', tile, NODE_RESOURCES[this.nodeResIdx], this.dir);
+        result = placeBuilding(this.sim, 'node', tile, this.nodeResource(), this.dir);
         break;
       case 'exporter':
         result = placeBuilding(this.sim, 'exporter', tile);
@@ -244,16 +293,17 @@ export class FactoryScene extends Phaser.Scene {
   }
 
   private center(t: Tile): { x: number; y: number } {
+    const v = this.view;
     return {
-      x: ORIGIN_X + t[0] * CELL + CELL / 2,
-      y: ORIGIN_Y + t[1] * CELL + CELL / 2,
+      x: v.ox + (t[0] - v.minX) * v.cell + v.cell / 2,
+      y: v.oy + (t[1] - v.minY) * v.cell + v.cell / 2,
     };
   }
 
   // 타일 중앙에 진행 방향을 가리키는 작은 삼각형
-  private drawDirTriangle(cx: number, cy: number, d: Dir, color: number): void {
+  private drawDirTriangle(cx: number, cy: number, d: Dir, color: number, size: number): void {
     const [dx, dy] = DIR_VEC[d];
-    const h = 7;
+    const h = size;
     const tip = { x: cx + dx * h, y: cy + dy * h };
     const back = { x: cx - dx * h, y: cy - dy * h };
     const perp = { x: -dy * h, y: dx * h };
@@ -268,19 +318,47 @@ export class FactoryScene extends Phaser.Scene {
     );
   }
 
+  private drawZoneGrid(): void {
+    const g = this.gfx;
+    const v = this.view;
+
+    for (const zid of this.sim.ownedZones) {
+      const [bx, by] = zoneTileBounds(zid);
+      const c = this.center([bx, by]);
+      const x0 = c.x - v.cell / 2;
+      const y0 = c.y - v.cell / 2;
+      const w = S * v.cell;
+      g.fillStyle(COLOR.zoneBg, 1);
+      g.fillRect(x0, y0, w, w);
+      g.lineStyle(1, COLOR.gridLine, 1);
+      for (let i = 0; i <= S; i++) {
+        g.lineBetween(x0 + i * v.cell, y0, x0 + i * v.cell, y0 + w);
+        g.lineBetween(x0, y0 + i * v.cell, x0 + w, y0 + i * v.cell);
+      }
+      g.lineStyle(2, COLOR.zoneBorder, 1);
+      g.strokeRect(x0, y0, w, w);
+    }
+
+    if (this.tool === 'zone') {
+      g.lineStyle(2, COLOR.buyable, 1);
+      for (const zid of buyableZones(this.sim.ownedZones)) {
+        const [bx, by] = zoneTileBounds(zid);
+        const c = this.center([bx, by]);
+        const w = S * v.cell;
+        g.strokeRect(c.x - v.cell / 2 + 3, c.y - v.cell / 2 + 3, w - 6, w - 6);
+      }
+    }
+  }
+
   private draw(): void {
     const g = this.gfx;
     g.clear();
+    this.computeView();
+    const v = this.view;
+    const tri = Math.max(4, v.cell * 0.16);
+    const inset = Math.max(1, v.cell * 0.08);
 
-    g.lineStyle(1, COLOR.gridLine, 1);
-    for (let x = 0; x <= CONFIG.grid.w; x++) {
-      const px = ORIGIN_X + x * CELL;
-      g.lineBetween(px, ORIGIN_Y, px, ORIGIN_Y + CONFIG.grid.h * CELL);
-    }
-    for (let y = 0; y <= CONFIG.grid.h; y++) {
-      const py = ORIGIN_Y + y * CELL;
-      g.lineBetween(ORIGIN_X, py, ORIGIN_X + CONFIG.grid.w * CELL, py);
-    }
+    this.drawZoneGrid();
 
     // 가동 중인(막히지 않은) 경로의 컨베이어 타일 집합
     const routes = computeRoutes(this.sim.placeables);
@@ -295,29 +373,30 @@ export class FactoryScene extends Phaser.Scene {
 
     for (const p of this.sim.placeables) {
       const c = this.center(p.tile);
+      const box = v.cell - inset * 2;
       if (p.kind === 'conveyor') {
         const on = activeTiles.has(`${p.tile[0]},${p.tile[1]}`) && !stopped.has(p.id);
         g.fillStyle(on ? COLOR.conveyorActive : COLOR.conveyor, 1);
-        g.fillRect(c.x - CELL / 2 + 4, c.y - CELL / 2 + 4, CELL - 8, CELL - 8);
-        this.drawDirTriangle(c.x, c.y, p.dir, 0x222222);
+        g.fillRect(c.x - box / 2, c.y - box / 2, box, box);
+        this.drawDirTriangle(c.x, c.y, p.dir, 0x222222, tri);
       } else if (p.kind === 'node') {
         g.fillStyle(stopped.has(p.id) ? COLOR.shutdown : COLOR.node, 1);
-        g.fillRect(c.x - CELL / 2 + 2, c.y - CELL / 2 + 2, CELL - 4, CELL - 4);
-        this.drawDirTriangle(c.x, c.y, p.dir, 0xffffff);
+        g.fillRect(c.x - box / 2, c.y - box / 2, box, box);
+        this.drawDirTriangle(c.x, c.y, p.dir, 0xffffff, tri);
       } else if (p.kind === 'converter') {
         g.fillStyle(COLOR.converter, 1);
-        g.fillRect(c.x - CELL / 2 + 2, c.y - CELL / 2 + 2, CELL - 4, CELL - 4);
-        this.drawDirTriangle(c.x, c.y, p.dir, 0xffffff);
+        g.fillRect(c.x - box / 2, c.y - box / 2, box, box);
+        this.drawDirTriangle(c.x, c.y, p.dir, 0xffffff, tri);
         if (shut[p.id]) {
           g.lineStyle(3, COLOR.shutdown, 1);
-          g.strokeRect(c.x - CELL / 2 + 1, c.y - CELL / 2 + 1, CELL - 2, CELL - 2);
+          g.strokeRect(c.x - v.cell / 2 + 1, c.y - v.cell / 2 + 1, v.cell - 2, v.cell - 2);
         }
       } else if (p.kind === 'storage') {
         g.fillStyle(COLOR.storage, 1);
-        g.fillRect(c.x - CELL / 2 + 2, c.y - CELL / 2 + 2, CELL - 4, CELL - 4);
+        g.fillRect(c.x - box / 2, c.y - box / 2, box, box);
       } else {
         g.fillStyle(COLOR.exporter, 1);
-        g.fillRect(c.x - CELL / 2 + 2, c.y - CELL / 2 + 2, CELL - 4, CELL - 4);
+        g.fillRect(c.x - box / 2, c.y - box / 2, box, box);
       }
     }
 
@@ -333,19 +412,33 @@ export class FactoryScene extends Phaser.Scene {
       const a = this.center(from);
       const b = this.center(to);
       const k = Math.min(1, cargo.ticksOnTile / perTile);
-      g.fillCircle(a.x + (b.x - a.x) * k, a.y + (b.y - a.y) * k, 5);
+      g.fillCircle(a.x + (b.x - a.x) * k, a.y + (b.y - a.y) * k, Math.max(2, v.cell * 0.11));
     }
 
     this.drawStatusText(shut);
 
     const dirHint = DIRECTIONAL_TOOLS.has(this.tool) ? `  방향 [${DIR_ARROW[this.dir]}]` : '';
-    const nodeHint = this.tool === 'node' ? `  자원 [${NODE_RESOURCES[this.nodeResIdx]}]` : '';
-    this.hud.setText(`골드 ${this.sim.gold}G   도구 [${this.tool}]${dirHint}${nodeHint}`);
+    const nodeHint = this.tool === 'node' ? `  자원 [${this.nodeResource()}]` : '';
+    const locked = !this.sim.unlockedResources.includes('A1');
+    const unlockHint = locked
+      ? `  칩판매 ${this.sim.chipSold}/${CONFIG.resourceUnlockChips}`
+      : '';
+    this.hud.setText(
+      `골드 ${this.sim.gold}G   구역 ${this.sim.ownedZones.length}개${unlockHint}   도구 [${this.tool}]${dirHint}${nodeHint}`,
+    );
   }
 
-  // 우측: Converter 재고 / Storage 적재 상태 (플레이스홀더 텍스트, M7 재디자인)
+  // 우측 상태판 (플레이스홀더 텍스트, M7 재디자인)
   private drawStatusText(shut: Record<string, { resources: string[]; weight: number }>): void {
     const lines: string[] = [];
+
+    if (this.tool === 'zone') {
+      const buyable = buyableZones(this.sim.ownedZones);
+      lines.push(`[구역] 다음 확장 ${zoneCost(this.sim)}G`);
+      lines.push(buyable.length ? `구매가능: ${buyable.map(zoneName).join(' ')}` : '더 살 구역 없음');
+      lines.push('');
+    }
+
     for (const p of this.sim.placeables) {
       if (p.kind === 'converter') {
         const bl = this.sim.converterBacklog[p.id] ?? {};

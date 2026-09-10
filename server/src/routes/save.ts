@@ -6,7 +6,7 @@ import { saves } from '../db';
 export const saveRouter = Router();
 saveRouter.use(requireAuth);
 
-const SAVE_VERSION = 2; // v2: M2 가공·저장·셧다운 필드 추가. v1 은 클라 normalizeState 가 흡수.
+const SAVE_VERSION = 3; // v3: M3-A 확장/해금 필드 추가. v1·v2 는 클라 normalizeState 가 흡수.
 
 saveRouter.get('/', async (req, res) => {
   const userId = (req as AuthedRequest).userId as string;
