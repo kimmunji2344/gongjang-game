@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { CONFIG } from '../src/data/config';
 import { gradeToSeconds } from '../src/data/speed';
-import { RESOURCES } from '../src/data/resources';
 import { findRecipe } from '../src/data/recipes';
 import {
   initialState,
@@ -15,6 +14,12 @@ import {
   ventConverter,
   buyZone,
   zoneCost,
+  upgradePlaceable,
+  upgradeCost,
+  effectivePrice,
+  nodeGrade,
+  storageCap,
+  storageTotal,
   shutdownSet,
   shutdownInfo,
   normalizeState,
@@ -74,11 +79,12 @@ describe('M1 코어 루프', () => {
     expect(s.gold).toBe(0);
   });
 
-  it('연결 후 틱을 돌리면 골드가 판매가(10G) 배수로 증가', () => {
+  it('연결 후 틱을 돌리면 판매로 골드가 쌓인다 (칩 최소 10G/개)', () => {
     let s = connectStartKit(initialState());
-    for (let i = 0; i < 300; i++) s = step(s);
-    expect(s.gold).toBeGreaterThan(0);
-    expect(s.gold % 10).toBe(0);
+    for (let i = 0; i < 100; i++) s = step(s);
+    expect(s.chipSold).toBeGreaterThan(0);
+    // M3-B: Exporter 레벨/tier 로 개당 판매가가 10 이상으로 오를 수 있음
+    expect(s.gold).toBeGreaterThanOrEqual(s.chipSold * 10);
   });
 
   it('무료 소진 + 골드 부족 시 컨베이어 설치 실패', () => {
@@ -195,8 +201,8 @@ describe('M2 Converter 가공', () => {
     let s = converterRig();
     const before = s.gold;
     for (let i = 0; i < 300; i++) s = step(s);
-    expect(s.gold).toBeGreaterThan(before); // B1 이 팔림
-    expect((s.gold - before) % RESOURCES.B1.sellPrice).toBe(0);
+    // B1(tier 1) 이 팔림 → 개당 최소 effectivePrice(B1, 1) = 15G
+    expect(s.gold - before).toBeGreaterThanOrEqual(effectivePrice('B1', 1));
   });
 
   it('재귀 가공: 재고 {A1, B1} → C1 산출 후 판매 (Converter → Exporter)', () => {
@@ -211,7 +217,7 @@ describe('M2 Converter 가공', () => {
       converterBacklog: { c: { A1: 1, B1: 1 } },
     };
     for (let i = 0; i < 40; i++) s = step(s);
-    expect(s.gold).toBe(RESOURCES.C1.sellPrice);
+    expect(s.gold).toBe(effectivePrice('C1', 1)); // C1(tier 2) 1개 판매 = 20G
     expect(s.converterBacklog.c).toBeUndefined(); // 재고 소진
   });
 });
@@ -228,7 +234,8 @@ describe('M2 Storage', () => {
     s = ok(placeConveyor(s, [1, 3], 'S'));
     s = ok(placeStorage(s, [1, 4]));
     for (let i = 0; i < 400; i++) s = step(s);
-    expect(s.storage['store-1-4']).toBe(10); // CONFIG.storageCapacity
+    expect(storageTotal(s, 'store-1-4')).toBe(10); // CONFIG.storageCapacity (레벨 1)
+    expect(s.storage['store-1-4'].A1).toBe(10); // 자원별로 보관
     expect(s.cargo.length).toBeGreaterThan(0); // 만차 → 초과분 벨트 대기
   });
 });
@@ -359,5 +366,133 @@ describe('M3-A 세이브 마이그레이션 (v2 → v3)', () => {
     expect(v3.ownedZones).toEqual(['0,0']);
     expect(v3.unlockedResources).toEqual(['chip']);
     expect(v3.chipSold).toBe(0);
+  });
+});
+
+// ---- M3-B: 레벨링 (업그레이드 · Exporter 레벨 · tier 판매가) --------------------
+
+describe('M3-B tier 판매가 + Exporter 레벨 배율', () => {
+  it('tier 높을수록 판매가 상승 (B1 ×1.5, C1 ×2)', () => {
+    expect(effectivePrice('chip', 1)).toBe(10); // tier 0
+    expect(effectivePrice('B1', 1)).toBe(15); // tier 1 → 10 × 1.5
+    expect(effectivePrice('C1', 1)).toBe(20); // tier 2 → 10 × 2
+  });
+  it('Exporter 레벨당 판매 수익률 +10%', () => {
+    expect(effectivePrice('chip', 2)).toBe(11);
+    expect(effectivePrice('chip', 3)).toBe(12);
+    expect(effectivePrice('B1', 2)).toBe(17); // round(10 × 1.5 × 1.1)
+  });
+});
+
+describe('M3-B Exporter 자동 레벨업', () => {
+  it('누적 판매가 한도(10×레벨)에 도달하면 자동 레벨업', () => {
+    let s = connectStartKit(initialState());
+    for (let i = 0; i < 400; i++) s = step(s);
+    expect(s.exporterLevel['exporter-1']).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe('M3-B Node 유효 등급 / Storage 용량', () => {
+  it('nodeGrade: 레벨당 등급 -1, 등급 1 캡', () => {
+    expect(nodeGrade('chip', 1)).toBe(10);
+    expect(nodeGrade('chip', 2)).toBe(9);
+    expect(nodeGrade('chip', 11)).toBe(1);
+    expect(nodeGrade('chip', 30)).toBe(1);
+  });
+  it('storageCap: 레벨당 +10', () => {
+    expect(storageCap(1)).toBe(10);
+    expect(storageCap(2)).toBe(20);
+    expect(storageCap(3)).toBe(30);
+  });
+});
+
+describe('M3-B 설비 업그레이드 (골드 + Storage 재료)', () => {
+  const rig = (): SimState => ({
+    ...initialState(),
+    gold: 1000,
+    placeables: [
+      { kind: 'node', id: 'n', resource: 'chip', tile: [1, 1], dir: 'E' },
+      { kind: 'storage', id: 'st', tile: [3, 3] },
+    ],
+    storage: { st: { B1: 5 } },
+  });
+
+  it('Node 업그레이드 — 골드 + B1 소모, 레벨 +1', () => {
+    const s = rig();
+    expect(upgradeCost(s, [1, 1])).toEqual({ gold: 10, material: 'B1', materialQty: 1 });
+    const r = upgradePlaceable(s, [1, 1]);
+    if (typeof r === 'string') throw new Error(r);
+    expect(r.nodeLevel['n']).toBe(2);
+    expect(r.gold).toBe(990);
+    expect(storageTotal(r, 'st')).toBe(4); // B1 1개 인출
+  });
+
+  it('Storage 업그레이드 — 용량 증가', () => {
+    const r = upgradePlaceable(rig(), [3, 3]);
+    if (typeof r === 'string') throw new Error(r);
+    expect(r.storageLevel['st']).toBe(2);
+    expect(storageCap(r.storageLevel['st'])).toBe(20);
+  });
+
+  it('골드 / 재료 부족 시 거부', () => {
+    expect(upgradePlaceable({ ...rig(), gold: 5 }, [1, 1])).toBe('골드 부족 (필요 10G)');
+    expect(upgradePlaceable({ ...rig(), storage: {} }, [1, 1])).toContain('부족');
+  });
+
+  it('Exporter 는 업그레이드 대상 아님 (자동 레벨업)', () => {
+    const s: SimState = {
+      ...initialState(),
+      placeables: [{ kind: 'exporter', id: 'e', tile: [1, 1] }],
+    };
+    expect(upgradePlaceable(s, [1, 1])).toBe('Exporter 는 자동 레벨업입니다');
+  });
+
+  it('레벨 2 업그레이드 비용은 2배 (선형)', () => {
+    const s = upgradePlaceable(rig(), [1, 1]) as SimState;
+    expect(upgradeCost(s, [1, 1])).toEqual({ gold: 20, material: 'B1', materialQty: 2 });
+  });
+});
+
+describe('M3-B Storage 자원별 보관', () => {
+  it('서로 다른 자원 2종이 한 Storage 에 나뉘어 쌓임', () => {
+    let s: SimState = {
+      ...initialState(),
+      gold: 100000,
+      unlockedResources: ['chip', 'A1', 'A2'],
+    };
+    s = ok(placeBuilding(s, 'node', [1, 1], 'A1', 'E'));
+    s = ok(placeConveyor(s, [2, 1], 'E'));
+    s = ok(placeStorage(s, [3, 1]));
+    s = ok(placeBuilding(s, 'node', [3, 3], 'A2', 'N'));
+    s = ok(placeConveyor(s, [3, 2], 'N'));
+    for (let i = 0; i < 300; i++) s = step(s);
+    const bucket = s.storage['store-3-1'] ?? {};
+    expect(bucket.A1).toBeGreaterThan(0);
+    expect(bucket.A2).toBeGreaterThan(0);
+    expect(storageTotal(s, 'store-3-1')).toBe(10); // 합계 = 용량(레벨 1)
+  });
+});
+
+describe('M3-B 세이브 마이그레이션 (v3 → v4)', () => {
+  it('storage 숫자 → 자원별 맵(내용 폐기), 레벨 필드 기본값', () => {
+    const v3 = {
+      tick: 1,
+      gold: 0,
+      placeables: [],
+      cargo: [],
+      nodeCooldown: {},
+      converterCooldown: {},
+      converterBacklog: {},
+      storage: { 'store-1-1': 7 }, // v3: 숫자
+      freeConveyors: 0,
+      ownedZones: ['0,0'],
+      unlockedResources: ['chip'],
+      chipSold: 3,
+    } as unknown as SimState;
+    const v4 = normalizeState(v3);
+    expect(v4.storage['store-1-1']).toEqual({}); // 자원 종류 미기록 → 폐기
+    expect(v4.nodeLevel).toEqual({});
+    expect(v4.exporterLevel).toEqual({});
+    expect(v4.chipSold).toBe(3);
   });
 });

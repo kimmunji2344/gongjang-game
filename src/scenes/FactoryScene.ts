@@ -19,6 +19,10 @@ import {
   shutdownInfo,
   step,
   stoppedPlaceables,
+  storageCap,
+  storageTotal,
+  upgradeCost,
+  upgradePlaceable,
   ventConverter,
   zoneCost,
 } from '../sim/sim';
@@ -32,6 +36,7 @@ type Tool =
   | 'exporter'
   | 'converter'
   | 'storage'
+  | 'upgrade'
   | 'vent'
   | 'remove';
 
@@ -69,6 +74,7 @@ const TOOLS: readonly Tool[] = [
   'exporter',
   'converter',
   'storage',
+  'upgrade',
   'vent',
   'remove',
 ];
@@ -79,6 +85,7 @@ const TOOL_LABEL: Record<Tool, string> = {
   exporter: 'Exporter',
   converter: 'Converter',
   storage: 'Storage',
+  upgrade: '업글',
   vent: '긴급배출',
   remove: '철거',
 };
@@ -121,8 +128,8 @@ export class FactoryScene extends Phaser.Scene {
     this.add.text(
       16,
       74,
-      '[Node] 검정  [Exporter] 회색  [Converter] 보라  [Storage] 청록  ·  R = 방향 회전  ·  N = Node 자원  ·  설치/철거비 10G',
-      { color: '#555', fontSize: '11px' },
+      '[Node]검정 [Exporter]회색 [Converter]보라 [Storage]청록 · R=회전 N=자원 · 업글=Node/Storage 클릭(골드+B1) · Exporter는 자동레벨',
+      { color: '#555', fontSize: '10px' },
     );
 
     this.statusText = this.add.text(652, 100, '', {
@@ -138,10 +145,10 @@ export class FactoryScene extends Phaser.Scene {
 
     TOOLS.forEach((t, i) => {
       const btn = this.add
-        .text(16 + i * 88, 44, TOOL_LABEL[t], {
+        .text(14 + i * 82, 44, TOOL_LABEL[t], {
           color: '#111',
           backgroundColor: '#e6e6e6',
-          padding: { x: 5, y: 4 },
+          padding: { x: 4, y: 4 },
           fontSize: '11px',
         })
         .setInteractive({ useHandCursor: true })
@@ -266,6 +273,9 @@ export class FactoryScene extends Phaser.Scene {
       case 'storage':
         result = placeStorage(this.sim, tile);
         break;
+      case 'upgrade':
+        result = upgradePlaceable(this.sim, tile);
+        break;
       case 'vent':
         result = ventConverter(this.sim, tile);
         break;
@@ -277,8 +287,14 @@ export class FactoryScene extends Phaser.Scene {
     if (typeof result === 'string') {
       this.toast.setText(result);
     } else {
+      const before = this.sim;
       this.sim = result;
-      this.toast.setText('');
+      if (this.tool === 'upgrade') {
+        const c = upgradeCost(before, tile);
+        this.toast.setText(c ? `업그레이드 (−${c.gold}G −${c.material}${c.materialQty})` : '업그레이드됨');
+      } else {
+        this.toast.setText('');
+      }
     }
   }
 
@@ -430,30 +446,45 @@ export class FactoryScene extends Phaser.Scene {
 
   // 우측 상태판 (플레이스홀더 텍스트, M7 재디자인)
   private drawStatusText(shut: Record<string, { resources: string[]; weight: number }>): void {
+    const s = this.sim;
     const lines: string[] = [];
 
     if (this.tool === 'zone') {
-      const buyable = buyableZones(this.sim.ownedZones);
-      lines.push(`[구역] 다음 확장 ${zoneCost(this.sim)}G`);
+      const buyable = buyableZones(s.ownedZones);
+      lines.push(`[구역] 다음 확장 ${zoneCost(s)}G`);
       lines.push(buyable.length ? `구매가능: ${buyable.map(zoneName).join(' ')}` : '더 살 구역 없음');
       lines.push('');
     }
 
-    for (const p of this.sim.placeables) {
-      if (p.kind === 'converter') {
-        const bl = this.sim.converterBacklog[p.id] ?? {};
+    for (const p of s.placeables) {
+      if (p.kind === 'node') {
+        const lv = s.nodeLevel[p.id] ?? 1;
+        lines.push(`[N] ${p.id} Lv${lv} (${RESOURCES[p.resource]?.name ?? p.resource})`);
+      } else if (p.kind === 'converter') {
+        const bl = s.converterBacklog[p.id] ?? {};
         const parts = Object.entries(bl).map(([r, n]) => `${RESOURCES[r]?.name ?? r}x${n}`);
-        const s = shut[p.id];
+        const sd = shut[p.id];
         lines.push(
           `[C] ${p.id}\n  재고 ${parts.length ? parts.join(' ') : '없음'}` +
-            (s
-              ? `\n  * 셧다운 (${s.resources
+            (sd
+              ? `\n  * 셧다운 (${sd.resources
                   .map((r) => RESOURCES[r]?.name ?? r)
-                  .join(',')} 과잉, 무게 ${s.weight})`
+                  .join(',')} 과잉, 무게 ${sd.weight})`
               : ''),
         );
       } else if (p.kind === 'storage') {
-        lines.push(`[S] ${p.id}\n  ${this.sim.storage[p.id] ?? 0}/${CONFIG.storageCapacity}`);
+        const lv = s.storageLevel[p.id] ?? 1;
+        const contents = Object.entries(s.storage[p.id] ?? {})
+          .filter(([, n]) => n > 0)
+          .map(([r, n]) => `${RESOURCES[r]?.name ?? r}x${n}`)
+          .join(' ');
+        lines.push(
+          `[S] ${p.id} Lv${lv}\n  ${storageTotal(s, p.id)}/${storageCap(lv)}${contents ? ' · ' + contents : ''}`,
+        );
+      } else if (p.kind === 'exporter') {
+        const lv = s.exporterLevel[p.id] ?? 1;
+        const prog = s.exporterProgress[p.id] ?? 0;
+        lines.push(`[E] ${p.id} Lv${lv} (+${Math.round((lv - 1) * 10)}%, ${prog}/${10 * lv})`);
       }
     }
     this.statusText.setText(lines.join('\n'));

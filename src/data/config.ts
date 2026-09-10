@@ -18,8 +18,18 @@ export const CONFIG = {
   autosaveMs: 30000,      // 자동저장 주기 (Code.md 확정: 30초)
 
   // M2 가공·저장·셧다운 (전부 임시 =10, Obsidian 확정 시 교체)
-  storageCapacity: 10,   // Storage 1개가 담는 최대 개수
+  storageCapacity: 10,   // Storage 레벨 1 기본 용량 (자원 개수 합계 기준)
   shutdownWeight: 10,    // Converter 재고 누적 무게 한도 — 도달 시 셧다운
+
+  // M3-B 레벨링 — 전부 임시. 스펙 "레벨-스탯 매핑표는 추후 오브젝트별 개별 결정".
+  upgradeCostBase: 10,        // Node/Storage 업그레이드 골드 = base × 현재 레벨
+  upgradeMaterial: 'B1',      // 업그레이드에 소모하는 가공품 (임시 — 용어정리 확정 시 교체)
+  upgradeMaterialPerLevel: 1, // 업그레이드 재료 개수 = 이 값 × 현재 레벨 (Storage 에서 인출)
+  nodeGradePerLevel: 1,       // Node 레벨당 생산 등급 감소 (= 빨라짐), 등급 1 에서 캡
+  storageCapPerLevel: 10,     // Storage 레벨당 용량 증가
+  exporterLevelUpBase: 10,    // Exporter 레벨업 필요 누적 판매 수 = base × 현재 레벨
+  exporterLevelBonus: 0.1,    // Exporter 레벨당 판매 수익률 +10%
+  tierPriceBonus: 0.5,        // 가공 tier 당 판매가 +50%
 
   // 시작 킷: Node(칩) 1 + Exporter 1 배치. 사이 3칸은 플레이어가 무료 컨베이어로 연결.
   // 칩 Node는 동쪽(Exporter 방향)을 향함. 플레이어가 컨베이어 3개를 동쪽 방향으로 이어주면 연결됨.

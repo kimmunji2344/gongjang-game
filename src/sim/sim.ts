@@ -32,6 +32,9 @@ export type Cargo = {
   readonly ticksOnTile: number;
 };
 
+// storageId → (resource → 개수). M3-B: 자원별로 나눠 보관 (업그레이드 재료 인출용).
+export type StorageMap = Readonly<Record<string, Readonly<Record<string, number>>>>;
+
 export type SimState = {
   readonly tick: number;
   readonly gold: number;
@@ -40,13 +43,44 @@ export type SimState = {
   readonly nodeCooldown: Readonly<Record<string, number>>;       // nodeId → 다음 생산까지 남은 틱
   readonly converterCooldown: Readonly<Record<string, number>>;  // convId → 다음 가공 완료까지 남은 틱
   readonly converterBacklog: Readonly<Record<string, Readonly<Record<string, number>>>>; // convId → resource → 개수
-  readonly storage: Readonly<Record<string, number>>;            // storageId → 저장된 개수
+  readonly storage: StorageMap;                                  // storageId → resource → 개수
   readonly freeConveyors: number;
   // M3-A 확장/해금
   readonly ownedZones: readonly string[];        // 소유 구역 id ("zx,zy"), 시작 ["0,0"]
   readonly unlockedResources: readonly string[]; // Node 로 배치 가능한 원자재, 시작 ["chip"]
   readonly chipSold: number;                     // 누적 칩 판매 개수 (자원 해금 게이트용)
+  // M3-B 레벨링 (전부 기본 레벨 1 / 진행도 0)
+  readonly nodeLevel: Readonly<Record<string, number>>;
+  readonly storageLevel: Readonly<Record<string, number>>;
+  readonly exporterLevel: Readonly<Record<string, number>>;
+  readonly exporterProgress: Readonly<Record<string, number>>; // exporterId → 레벨업 진행 누적(판매 수)
 };
+
+// ---- 파생 수치 (레벨 반영) ------------------------------------------------
+
+// Node 유효 생산 등급 (레벨 오를수록 등급↓ = 빨라짐, 등급 1 캡)
+export function nodeGrade(resource: string, level: number): number {
+  const base = RESOURCES[resource].produceGrade;
+  return Math.max(1, base - (level - 1) * CONFIG.nodeGradePerLevel);
+}
+
+// Storage 유효 용량 (자원 개수 합계 기준)
+export function storageCap(level: number): number {
+  return CONFIG.storageCapacity + (level - 1) * CONFIG.storageCapPerLevel;
+}
+
+// 1개 판매 시 받는 골드 = 기본가 × tier 배율 × Exporter 레벨 배율 (정수 반올림)
+export function effectivePrice(resource: string, exporterLevel: number): number {
+  const def = RESOURCES[resource];
+  const tierMult = 1 + def.tier * CONFIG.tierPriceBonus;
+  const exMult = 1 + (exporterLevel - 1) * CONFIG.exporterLevelBonus;
+  return Math.round(def.sellPrice * tierMult * exMult);
+}
+
+// storageId 에 담긴 자원 총 개수
+export function storageTotal(state: SimState, storageId: string): number {
+  return Object.values(state.storage[storageId] ?? {}).reduce((a, b) => a + b, 0);
+}
 
 const CONVEYOR_GRADE = 10; // 임시 =10: 컨베이어 이동 속도 등급 (오브젝트별 매핑표 미정)
 
@@ -73,12 +107,29 @@ export function initialState(): SimState {
     ownedZones: [CENTER_ZONE],
     unlockedResources: ['chip'],
     chipSold: 0,
+    nodeLevel: {},
+    storageLevel: {},
+    exporterLevel: {},
+    exporterProgress: {},
   };
+}
+
+// v3 이하 storage(storageId → number) 를 v4(storageId → resource → 개수) 로 변환.
+// v3 는 자원 종류를 기록하지 않았으므로 내용은 폐기(건물·레벨은 유지).
+function normalizeStorage(raw: unknown): Record<string, Record<string, number>> {
+  const out: Record<string, Record<string, number>> = {};
+  if (raw && typeof raw === 'object') {
+    for (const [id, v] of Object.entries(raw as Record<string, unknown>)) {
+      out[id] = v && typeof v === 'object' ? { ...(v as Record<string, number>) } : {};
+    }
+  }
+  return out;
 }
 
 // 불러온 세이브를 현재 스키마로 맞춘다.
 //  v1 → v2 : M2 필드(converter*/storage) 채움 + Cargo.nodeId → sourceId
 //  v2 → v3 : M3-A 필드(ownedZones/unlockedResources/chipSold) 채움
+//  v3 → v4 : M3-B 레벨 필드 채움 + storage 자원별 맵으로 변환(v3 내용 폐기)
 export function normalizeState(s: SimState): SimState {
   type LegacyCargo = Cargo & { nodeId?: string };
   return {
@@ -92,10 +143,14 @@ export function normalizeState(s: SimState): SimState {
     nodeCooldown: s.nodeCooldown ?? {},
     converterCooldown: s.converterCooldown ?? {},
     converterBacklog: s.converterBacklog ?? {},
-    storage: s.storage ?? {},
+    storage: normalizeStorage(s.storage),
     ownedZones: s.ownedZones?.length ? s.ownedZones : [CENTER_ZONE],
     unlockedResources: s.unlockedResources?.length ? s.unlockedResources : ['chip'],
     chipSold: s.chipSold ?? 0,
+    nodeLevel: s.nodeLevel ?? {},
+    storageLevel: s.storageLevel ?? {},
+    exporterLevel: s.exporterLevel ?? {},
+    exporterProgress: s.exporterProgress ?? {},
   };
 }
 
@@ -248,18 +303,28 @@ export function step(state: SimState): SimState {
   const nextCargo: Cargo[] = [];
   const backlog: Record<string, Record<string, number>> = {};
   for (const [k, v] of Object.entries(state.converterBacklog)) backlog[k] = { ...v };
-  const storage: Record<string, number> = { ...state.storage };
+  const storage: Record<string, Record<string, number>> = {};
+  for (const [k, v] of Object.entries(state.storage)) storage[k] = { ...v };
+  const exporterProgress: Record<string, number> = { ...state.exporterProgress };
 
-  const sell = (resource: string): void => {
-    gold += RESOURCES[resource].sellPrice;
+  const sell = (resource: string, exporterId: string): void => {
+    gold += effectivePrice(resource, state.exporterLevel[exporterId] ?? 1);
     if (resource === 'chip') chipSold += 1;
+    exporterProgress[exporterId] = (exporterProgress[exporterId] ?? 0) + 1;
   };
 
   const addBacklog = (convId: string, resource: string): void => {
     const b = backlog[convId] ?? (backlog[convId] = {});
     b[resource] = (b[resource] ?? 0) + 1;
   };
-  const storageFull = (id: string): boolean => (storage[id] ?? 0) >= CONFIG.storageCapacity;
+  const storageCount = (id: string): number =>
+    Object.values(storage[id] ?? {}).reduce((a, b) => a + b, 0);
+  const storageFull = (id: string): boolean =>
+    storageCount(id) >= storageCap(state.storageLevel[id] ?? 1);
+  const addStorage = (id: string, resource: string): void => {
+    const b = storage[id] ?? (storage[id] = {});
+    b[resource] = (b[resource] ?? 0) + 1;
+  };
 
   // 소스가 자원 1개를 종착으로 내보낸다. 경유 컨베이어가 있으면 cargo 로 띄운다.
   // 반환: 실제로 배출됐는가 (Storage 만차면 false)
@@ -269,8 +334,8 @@ export function step(state: SimState): SimState {
       return true;
     }
     // 종착에 직접 인접 (경유 컨베이어 0칸)
-    if (route.sink === 'exporter') {
-      sell(resource);
+    if (route.sink === 'exporter' && route.sinkId) {
+      sell(resource, route.sinkId);
       return true;
     }
     if (route.sink === 'converter' && route.sinkId) {
@@ -279,7 +344,7 @@ export function step(state: SimState): SimState {
     }
     if (route.sink === 'storage' && route.sinkId) {
       if (storageFull(route.sinkId)) return false;
-      storage[route.sinkId] = (storage[route.sinkId] ?? 0) + 1;
+      addStorage(route.sinkId, resource);
       return true;
     }
     return false; // blocked
@@ -307,15 +372,15 @@ export function step(state: SimState): SimState {
       continue;
     }
     // 다음 칸이 종착 sink
-    if (route.sink === 'exporter') {
-      sell(c.resource);
+    if (route.sink === 'exporter' && route.sinkId) {
+      sell(c.resource, route.sinkId);
     } else if (route.sink === 'converter' && route.sinkId) {
       addBacklog(route.sinkId, c.resource);
     } else if (route.sink === 'storage' && route.sinkId) {
       if (storageFull(route.sinkId)) {
         nextCargo.push({ ...c, ticksOnTile: perTile }); // 만차 → 벨트 끝에서 대기
       } else {
-        storage[route.sinkId] = (storage[route.sinkId] ?? 0) + 1;
+        addStorage(route.sinkId, c.resource);
       }
     }
   }
@@ -331,7 +396,8 @@ export function step(state: SimState): SimState {
     const cd = (state.nodeCooldown[p.id] ?? 0) - 1;
     const route = routes.get(p.id);
     if (cd <= 0 && route && route.sink !== 'blocked' && emit(p.id, p.resource, route)) {
-      nodeCooldown[p.id] = gradeToTicks(RESOURCES[p.resource].produceGrade, CONFIG.tickHz);
+      const grade = nodeGrade(p.resource, state.nodeLevel[p.id] ?? 1);
+      nodeCooldown[p.id] = gradeToTicks(grade, CONFIG.tickHz);
     } else {
       nodeCooldown[p.id] = Math.max(0, cd);
     }
@@ -389,11 +455,26 @@ export function step(state: SimState): SimState {
       ? [...state.unlockedResources, 'A1', 'A2']
       : state.unlockedResources;
 
+  // 6) Exporter 레벨업 — 누적 판매 수가 한도(base × 현재 레벨) 이상이면 레벨++ (초과분 이월)
+  const exporterLevel: Record<string, number> = { ...state.exporterLevel };
+  for (const exId of Object.keys(exporterProgress)) {
+    let lvl = exporterLevel[exId] ?? 1;
+    let prog = exporterProgress[exId];
+    while (prog >= CONFIG.exporterLevelUpBase * lvl) {
+      prog -= CONFIG.exporterLevelUpBase * lvl;
+      lvl += 1;
+    }
+    exporterLevel[exId] = lvl;
+    exporterProgress[exId] = prog;
+  }
+
   return {
     ...state,
     tick: state.tick + 1,
     gold,
     chipSold,
+    exporterLevel,
+    exporterProgress,
     cargo: nextCargo,
     nodeCooldown,
     converterCooldown,
@@ -532,6 +613,78 @@ export function buyZone(state: SimState, zoneId: string): PlaceResult {
   return { ...state, gold: state.gold - cost, ownedZones: [...state.ownedZones, zoneId] };
 }
 
+// ---- M3-B 설비 업그레이드 (골드 + Storage 에서 재료 인출) ------------------
+
+// 모든 Storage 를 통틀어 특정 자원 보유량
+function totalInStorage(storage: StorageMap, resource: string): number {
+  let n = 0;
+  for (const b of Object.values(storage)) n += b[resource] ?? 0;
+  return n;
+}
+
+// Storage 들에서 qty 만큼 자원을 뺀 새 맵 (앞 Storage 부터 소진)
+function withdrawFromStorage(
+  storage: StorageMap,
+  resource: string,
+  qty: number,
+): Record<string, Record<string, number>> {
+  const out: Record<string, Record<string, number>> = {};
+  let remaining = qty;
+  for (const [id, b] of Object.entries(storage)) {
+    const copy: Record<string, number> = { ...b };
+    const have = copy[resource] ?? 0;
+    if (remaining > 0 && have > 0) {
+      const take = Math.min(remaining, have);
+      remaining -= take;
+      if (have - take > 0) copy[resource] = have - take;
+      else delete copy[resource];
+    }
+    out[id] = copy;
+  }
+  return out;
+}
+
+export type UpgradeCost = { gold: number; material: string; materialQty: number };
+
+// tile 설비의 다음 레벨업 비용 (Node/Storage 만). Exporter 는 자동 레벨업이라 대상 아님.
+export function upgradeCost(state: SimState, tile: Tile): UpgradeCost | null {
+  const p = placeableAt(state.placeables, tile);
+  if (!p || (p.kind !== 'node' && p.kind !== 'storage')) return null;
+  const level = (p.kind === 'node' ? state.nodeLevel : state.storageLevel)[p.id] ?? 1;
+  return {
+    gold: CONFIG.upgradeCostBase * level,
+    material: CONFIG.upgradeMaterial,
+    materialQty: CONFIG.upgradeMaterialPerLevel * level,
+  };
+}
+
+// 설비 업그레이드 — 골드 + Storage 에 쌓인 재료 소모, 레벨 +1
+export function upgradePlaceable(state: SimState, tile: Tile): PlaceResult {
+  const p = placeableAt(state.placeables, tile);
+  if (!p) return '설치물이 없습니다';
+  if (p.kind === 'exporter') return 'Exporter 는 자동 레벨업입니다';
+  if (p.kind !== 'node' && p.kind !== 'storage') return '업그레이드할 수 없는 설비입니다';
+
+  const cost = upgradeCost(state, tile)!;
+  if (state.gold < cost.gold) return `골드 부족 (필요 ${cost.gold}G)`;
+  const have = totalInStorage(state.storage, cost.material);
+  if (have < cost.materialQty) {
+    const name = RESOURCES[cost.material]?.name ?? cost.material;
+    return `${name} 부족 (필요 ${cost.materialQty}, 보유 ${have}) — Storage 에 모아야 함`;
+  }
+
+  const levels = p.kind === 'node' ? state.nodeLevel : state.storageLevel;
+  const nextLevels = { ...levels, [p.id]: (levels[p.id] ?? 1) + 1 };
+  const base: SimState = {
+    ...state,
+    gold: state.gold - cost.gold,
+    storage: withdrawFromStorage(state.storage, cost.material, cost.materialQty),
+  };
+  return p.kind === 'node'
+    ? { ...base, nodeLevel: nextLevels }
+    : { ...base, storageLevel: nextLevels };
+}
+
 // 철거비 = 해당 설치물의 설치 비용과 동일 (Obsidian: "철거 비용은 설치 비용과 동일"). 임시 =10.
 function removalFee(kind: Placeable['kind']): number {
   switch (kind) {
@@ -563,6 +716,14 @@ export function removePlaceable(state: SimState, tile: Tile): PlaceResult {
   delete converterBacklog[p.id];
   const storage = { ...state.storage };
   delete storage[p.id];
+  const nodeLevel = { ...state.nodeLevel };
+  delete nodeLevel[p.id];
+  const storageLevel = { ...state.storageLevel };
+  delete storageLevel[p.id];
+  const exporterLevel = { ...state.exporterLevel };
+  delete exporterLevel[p.id];
+  const exporterProgress = { ...state.exporterProgress };
+  delete exporterProgress[p.id];
 
   return {
     ...state,
@@ -573,5 +734,9 @@ export function removePlaceable(state: SimState, tile: Tile): PlaceResult {
     converterCooldown,
     converterBacklog,
     storage,
+    nodeLevel,
+    storageLevel,
+    exporterLevel,
+    exporterProgress,
   };
 }
