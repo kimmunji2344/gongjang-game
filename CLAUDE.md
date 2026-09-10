@@ -26,6 +26,7 @@
 - src/game.ts — 로그인 통과 후 Phaser 지연 로딩 (세이브 주입)
 - server/     — M4 백엔드 (독립 패키지: Express + MongoDB Atlas + bcrypt + JWT). server/.env 는 gitignore
 - test/       — vitest (sim + auth 클라이언트). server/test/ 는 서버 자체 vitest
+- render.yaml / DEPLOY.md — Render 배포 Blueprint + 배포 절차 가이드 (M4 단계 B)
 
 ## 명령
 - npm run dev      클라 개발 서버 (5173)
@@ -37,4 +38,5 @@
 - M4 단계 A 완료 (실 인증 + 세이브, 로컬). 단계 B = GitHub 원격 + Render 배포 대기.
 - M2 완료 (가공·저장·셧다운, 로컬). 자원/가공품/레시피는 임시 코드(A1/A2/B1/C1, R1/R2) — 용어정리 확정 시 src/data/{resources,recipes}.ts 교체.
 - M3 완료 (로컬). A: 십자 3×3 구역 확장 + 칩판매 자원해금. B: 설비 업그레이드(골드+B1)·Node 레벨·Exporter 자동 레벨·tier 판매가. 곡선·배율 전부 임시(config.ts).
-- 세이브 v4 (storage = 자원별 맵). 다음 후보: M4 단계 B(배포) 또는 M5(랭킹·WAR).
+- M4 단계 B 준비 완료 (render.yaml + DEPLOY.md). 실행 대기: 사용자가 GitHub 비공개 저장소 생성 → Claude push → 사용자 Render 배포 → Claude .env.production + 빌드 → 사용자 itch.io.
+- 세이브 v4 (storage = 자원별 맵). 다음: M4-B 배포 완료 후 M5(랭킹·WAR).

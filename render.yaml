@@ -1,0 +1,22 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+# 서버(server/)만 배포한다. 클라이언트는 itch.io 정적 호스팅, DB 는 MongoDB Atlas(별개 서비스).
+services:
+  - type: web
+    name: gongjang-server
+    runtime: node
+    plan: free
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      # 아래 두 값은 Render 대시보드에서 직접 입력 (로컬 server/.env 의 값 그대로).
+      # sync:false → Blueprint 파일에는 값을 넣지 않고 대시보드에서만 관리.
+      - key: MONGODB_URI
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      # Bearer 토큰 인증이라 쿠키/CSRF 없음. itch.io 오리진은 예측 불가하므로 * 유지.
+      - key: CORS_ORIGIN
+        value: "*"
