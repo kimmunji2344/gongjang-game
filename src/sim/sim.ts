@@ -6,10 +6,12 @@
 //   Converter 는 입력을 재고(backlog)로 쌓아두고 레시피가 갖춰지면 가공 → 출력을 다시 라우팅.
 //   셧다운 = Converter 재고 누적 무게 ≥ 한도 → 그 Converter 로 유입되는 공장(상류) 정지.
 
+import { ACHIEVEMENTS, AchievementMetric } from '../data/achievements';
 import { CONFIG } from '../data/config';
 import { findRecipe } from '../data/recipes';
 import { RESOURCES } from '../data/resources';
 import { gradeToTicks } from '../data/speed';
+import { TILE_PATTERNS } from '../data/tilePatterns';
 import {
   DIR_OPP,
   DIR_VEC,
@@ -55,6 +57,18 @@ export type SimState = {
   readonly storageLevel: Readonly<Record<string, number>>;
   readonly exporterLevel: Readonly<Record<string, number>>;
   readonly exporterProgress: Readonly<Record<string, number>>; // exporterId → 레벨업 진행 누적(판매 수)
+  // M6 콘텐츠 (NPC · 도감 · 튜토리얼)
+  readonly npc: {
+    readonly resource: string;
+    readonly qty: number;
+    readonly day: string;
+    readonly done: boolean; // 오늘 몫 완료 여부 — day 가 같으면(완료 여부 무관) 재발급하지 않음
+  } | null;
+  readonly npcQuestsDone: number;             // NPC 퀘스트 누적 완료 수 (업적 지표)
+  readonly codexResources: readonly string[]; // 자원 도감 — 만들어낸 적 있는 자원
+  readonly codexAchievements: readonly string[]; // 업적 도감 — 달성한 업적 id
+  readonly codexTilePatterns: readonly string[]; // 타일 도감(히든) — 발견한 패턴 id
+  readonly hintsSeen: readonly string[];      // 튜토리얼 — 평생 1회 노출된 힌트 id
 };
 
 // ---- 파생 수치 (레벨 반영) ------------------------------------------------
@@ -113,6 +127,12 @@ export function initialState(): SimState {
     storageLevel: {},
     exporterLevel: {},
     exporterProgress: {},
+    npc: null,
+    npcQuestsDone: 0,
+    codexResources: [],
+    codexAchievements: [],
+    codexTilePatterns: [],
+    hintsSeen: [],
   };
 }
 
@@ -133,11 +153,18 @@ function normalizeStorage(raw: unknown): Record<string, Record<string, number>> 
 //  v2 → v3 : M3-A 필드(ownedZones/unlockedResources/chipSold) 채움
 //  v3 → v4 : M3-B 레벨 필드 채움 + storage 자원별 맵으로 변환(v3 내용 폐기)
 //  v4 → v5 : M5 totalRevenue 필드 채움(기본 0)
+//  v5 → v6 : M6 NPC/도감/튜토리얼 필드 채움(기본값)
 export function normalizeState(s: SimState): SimState {
   type LegacyCargo = Cargo & { nodeId?: string };
   return {
     ...s,
     totalRevenue: s.totalRevenue ?? 0,
+    npc: s.npc ?? null,
+    npcQuestsDone: s.npcQuestsDone ?? 0,
+    codexResources: s.codexResources ?? [],
+    codexAchievements: s.codexAchievements ?? [],
+    codexTilePatterns: s.codexTilePatterns ?? [],
+    hintsSeen: s.hintsSeen ?? [],
     cargo: (s.cargo ?? []).map((c) => {
       const lc = c as LegacyCargo;
       return lc.sourceId
@@ -311,6 +338,7 @@ export function step(state: SimState): SimState {
   const storage: Record<string, Record<string, number>> = {};
   for (const [k, v] of Object.entries(state.storage)) storage[k] = { ...v };
   const exporterProgress: Record<string, number> = { ...state.exporterProgress };
+  const codexResources = new Set(state.codexResources); // M6 자원 도감 — 만들어낸 자원 자동 등록
 
   const sell = (resource: string, exporterId: string): void => {
     const price = effectivePrice(resource, state.exporterLevel[exporterId] ?? 1);
@@ -336,6 +364,7 @@ export function step(state: SimState): SimState {
   // 소스가 자원 1개를 종착으로 내보낸다. 경유 컨베이어가 있으면 cargo 로 띄운다.
   // 반환: 실제로 배출됐는가 (Storage 만차면 false)
   const emit = (sourceId: string, resource: string, route: Route): boolean => {
+    codexResources.add(resource);
     if (route.path.length > 1) {
       nextCargo.push({ resource, sourceId, index: 0, ticksOnTile: 0 });
       return true;
@@ -475,6 +504,27 @@ export function step(state: SimState): SimState {
     exporterProgress[exId] = prog;
   }
 
+  // 7) 업적 도감 — 지표가 임계값 이상이면 등록 (전부 단조증가값이라 한번 등록되면 영구 유지)
+  const metrics: Record<AchievementMetric, number> = {
+    totalRevenue,
+    zoneCount: state.ownedZones.length,
+    npcQuestsDone: state.npcQuestsDone,
+  };
+  const codexAchievements = [...state.codexAchievements];
+  for (const a of ACHIEVEMENTS) {
+    if (!codexAchievements.includes(a.id) && metrics[a.metric] >= a.threshold) {
+      codexAchievements.push(a.id);
+    }
+  }
+
+  // 8) 타일 도감(히든) — 배치 모양이 일치하면 등록 (사전 힌트 없음, 우연히 발견)
+  const codexTilePatterns = [...state.codexTilePatterns];
+  for (const p of TILE_PATTERNS) {
+    if (!codexTilePatterns.includes(p.id) && p.matches(state.placeables)) {
+      codexTilePatterns.push(p.id);
+    }
+  }
+
   return {
     ...state,
     tick: state.tick + 1,
@@ -489,6 +539,9 @@ export function step(state: SimState): SimState {
     converterBacklog,
     storage,
     unlockedResources,
+    codexResources: [...codexResources],
+    codexAchievements,
+    codexTilePatterns,
   };
 }
 
@@ -624,7 +677,7 @@ export function buyZone(state: SimState, zoneId: string): PlaceResult {
 // ---- M3-B 설비 업그레이드 (골드 + Storage 에서 재료 인출) ------------------
 
 // 모든 Storage 를 통틀어 특정 자원 보유량
-function totalInStorage(storage: StorageMap, resource: string): number {
+export function totalInStorage(storage: StorageMap, resource: string): number {
   let n = 0;
   for (const b of Object.values(storage)) n += b[resource] ?? 0;
   return n;
@@ -747,4 +800,62 @@ export function removePlaceable(state: SimState, tile: Tile): PlaceResult {
     exporterLevel,
     exporterProgress,
   };
+}
+
+// ---- M6 NPC 일일 퀘스트 (하루 1회, 클라 시계 기준 — sim.ts 순수성 유지 위해 day 를 인자로 받음) ----
+
+// 오늘 날짜 문자열을 결정론적으로 해싱해 unlockedResources 중 하나를 고른다 (진짜 랜덤 대신 —
+// 같은 입력엔 항상 같은 결과, 테스트 가능. 정말 랜덤이 필요해지면 이후 교체).
+function pickNpcResource(day: string, pool: readonly string[]): string {
+  const hash = [...day].reduce((sum, ch) => sum + ch.charCodeAt(0), 0);
+  return pool[hash % pool.length];
+}
+
+// 날짜가 바뀌면 새 NPC 요청으로 교체. day 가 같으면 완료 여부와 무관하게 그대로 유지
+// (완료 후 null 로 비우면 다음 프레임에 바로 재발급되어 "하루 1회"가 깨짐 — done 플래그로 방지).
+// 이월 없음 — 스펙: "방문 주기 하루 1회".
+export function refreshNpcQuest(state: SimState, day: string): SimState {
+  if (state.npc?.day === day) return state;
+  const pool = state.unlockedResources;
+  if (pool.length === 0) return state;
+  return {
+    ...state,
+    npc: { resource: pickNpcResource(day, pool), qty: CONFIG.npcQuestQty, day, done: false },
+  };
+}
+
+// NPC 요청 자원을 Storage 에서 인출해 건네기 — 보상 = 기본 판매가(Exporter 레벨 무관) × 수량 × 알파 배수.
+// 보상도 totalRevenue 에 집계(WAR·시즌 랭킹에 반영 — 스펙상 NPC 도 결국 판매 수익의 일종).
+export function fulfillNpcQuest(state: SimState): PlaceResult {
+  if (!state.npc) return '오늘의 NPC 요청이 없습니다';
+  if (state.npc.done) return '오늘 요청은 이미 완료했습니다';
+  const { resource, qty } = state.npc;
+  const have = totalInStorage(state.storage, resource);
+  if (have < qty) {
+    const name = RESOURCES[resource]?.name ?? resource;
+    return `${name} 부족 (필요 ${qty}, 보유 ${have}) — Storage 에 모아야 함`;
+  }
+  const reward = effectivePrice(resource, 1) * qty * CONFIG.npcAlphaMultiplier;
+  return {
+    ...state,
+    gold: state.gold + reward,
+    totalRevenue: state.totalRevenue + reward,
+    storage: withdrawFromStorage(state.storage, resource, qty),
+    npcQuestsDone: state.npcQuestsDone + 1,
+    npc: { ...state.npc, done: true }, // 오늘 몫 완료 — 내일 날짜가 바뀌어야 재발급
+  };
+}
+
+// ---- M6 튜토리얼 (JIT 힌트, 평생 1회) --------------------------------------
+
+export type HintId = 'start' | 'converter' | 'shutdown';
+
+// trigger 상황이 활성 상태이고 아직 안 본 힌트면 등록한 새 state 와 함께 반환, 아니면 [state, null].
+export function checkHint(
+  state: SimState,
+  id: HintId,
+  active: boolean,
+): [SimState, HintId | null] {
+  if (!active || state.hintsSeen.includes(id)) return [state, null];
+  return [{ ...state, hintsSeen: [...state.hintsSeen, id] }, id];
 }

@@ -31,6 +31,10 @@ export const CONFIG = {
   exporterLevelBonus: 0.1,    // Exporter 레벨당 판매 수익률 +10%
   tierPriceBonus: 0.5,        // 가공 tier 당 판매가 +50%
 
+  // M6 NPC 일일 퀘스트 — 임시. 스펙 "알파(보너스)" 수치 미정.
+  npcQuestQty: 10,       // 하루 요청 수량 (임시 =10)
+  npcAlphaMultiplier: 2, // 보상 = 기본 판매가 × 수량 × 이 배수 (임시 =2, "기본가의 2배")
+
   // 시작 킷: Node(칩) 1 + Exporter 1 배치. 사이 3칸은 플레이어가 무료 컨베이어로 연결.
   // 칩 Node는 동쪽(Exporter 방향)을 향함. 플레이어가 컨베이어 3개를 동쪽 방향으로 이어주면 연결됨.
   startKit: {

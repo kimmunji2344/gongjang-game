@@ -1,26 +1,34 @@
 // M1~M3 렌더 + 입력. 그래픽은 전부 플레이스홀더 (M7에서 일괄 교체 예정).
 import Phaser from 'phaser';
+import { ACHIEVEMENTS } from '../data/achievements';
 import { CONFIG } from '../data/config';
 import { RESOURCES } from '../data/resources';
 import { gradeToTicks } from '../data/speed';
+import { TILE_PATTERNS } from '../data/tilePatterns';
 import { DIR_ARROW, DIR_VEC, Dir, Tile } from '../sim/grid';
+import { currentDayId } from '../sim/day';
 import {
+  HintId,
   PlaceResult,
   SimState,
   buyZone,
+  checkHint,
   computeRoutes,
   findPath,
+  fulfillNpcQuest,
   initialState,
   placeBuilding,
   placeConverter,
   placeConveyor,
   placeStorage,
+  refreshNpcQuest,
   removePlaceable,
   shutdownInfo,
   step,
   stoppedPlaceables,
   storageCap,
   storageTotal,
+  totalInStorage,
   upgradeCost,
   upgradePlaceable,
   ventConverter,
@@ -108,6 +116,8 @@ export class FactoryScene extends Phaser.Scene {
   private toast!: Phaser.GameObjects.Text;
   private toolButtons: Phaser.GameObjects.Text[] = [];
   private rankPanel!: Phaser.GameObjects.Text; // M5 랭킹/명예의전당 패널 (플레이스홀더 — M7 재디자인)
+  private npcText!: Phaser.GameObjects.Text; // M6 NPC 오늘의 요청 표시
+  private codexPanel!: Phaser.GameObjects.Text; // M6 도감(자원/업적/타일) 패널
 
   constructor() {
     super('factory');
@@ -145,6 +155,11 @@ export class FactoryScene extends Phaser.Scene {
       .text(400, 566, '', { color: '#c00', fontSize: '14px' })
       .setOrigin(0.5);
 
+    this.npcText = this.add.text(16, 90, '', { color: '#555', fontSize: '11px' });
+
+    // M6 튜토리얼 힌트 1/3 — 게임 시작 시 1회 (Obsidian 스펙 예시 그대로)
+    this.applyHint('start', true, '이 둘을 이어보세요! (Node → Exporter, 컨베이어로 연결)');
+
     TOOLS.forEach((t, i) => {
       const btn = this.add
         .text(14 + i * 82, 44, TOOL_LABEL[t], {
@@ -163,6 +178,14 @@ export class FactoryScene extends Phaser.Scene {
           ev.stopPropagation();
           this.tool = t;
           this.refreshToolButtons();
+          // M6 튜토리얼 힌트 2/3 — 첫 Converter 도구 선택 시 1회
+          if (t === 'converter') {
+            this.applyHint(
+              'converter',
+              true,
+              'Converter는 서로 다른 자원 2종 이상을 입력받아야 가공을 시작합니다',
+            );
+          }
         });
       this.toolButtons.push(btn);
     });
@@ -246,6 +269,81 @@ export class FactoryScene extends Phaser.Scene {
         },
       );
 
+    // M6 NPC 건네기 버튼 (플레이스홀더 — M7 재디자인)
+    this.add
+      .text(700, 84, 'NPC건네기', {
+        color: '#111',
+        backgroundColor: '#f0d8c0',
+        padding: { x: 10, y: 5 },
+        fontSize: '13px',
+      })
+      .setInteractive({ useHandCursor: true })
+      .on(
+        'pointerdown',
+        (
+          _p: Phaser.Input.Pointer,
+          _x: number,
+          _y: number,
+          ev: Phaser.Types.Input.EventData,
+        ) => {
+          ev.stopPropagation();
+          const r = fulfillNpcQuest(this.sim);
+          if (typeof r === 'string') {
+            this.toast.setText(r);
+          } else {
+            this.sim = r;
+            this.toast.setText('NPC 퀘스트 완료! 보상 지급됨');
+          }
+        },
+      );
+
+    // M6 도감 버튼 + 패널 (플레이스홀더 — M7 재디자인). 랭킹 패널과 상호 배타.
+    this.add
+      .text(700, 118, '도감', {
+        color: '#111',
+        backgroundColor: '#e0d0f0',
+        padding: { x: 10, y: 5 },
+        fontSize: '13px',
+      })
+      .setInteractive({ useHandCursor: true })
+      .on(
+        'pointerdown',
+        (
+          _p: Phaser.Input.Pointer,
+          _x: number,
+          _y: number,
+          ev: Phaser.Types.Input.EventData,
+        ) => {
+          ev.stopPropagation();
+          this.toggleCodexPanel();
+        },
+      );
+
+    this.codexPanel = this.add
+      .text(190, 100, '', {
+        color: '#111',
+        backgroundColor: '#ffffff',
+        padding: { x: 10, y: 10 },
+        fontSize: '12px',
+        fontFamily: 'monospace',
+        wordWrap: { width: 452 },
+      })
+      .setDepth(10)
+      .setVisible(false)
+      .setInteractive({ useHandCursor: true })
+      .on(
+        'pointerdown',
+        (
+          _p: Phaser.Input.Pointer,
+          _x: number,
+          _y: number,
+          ev: Phaser.Types.Input.EventData,
+        ) => {
+          ev.stopPropagation();
+          this.codexPanel.setVisible(false);
+        },
+      );
+
     // 자동 저장 (Code.md 확정: 30초 주기)
     this.time.addEvent({
       delay: CONFIG.autosaveMs,
@@ -270,11 +368,50 @@ export class FactoryScene extends Phaser.Scene {
       this.rankPanel.setVisible(false);
       return;
     }
+    this.codexPanel.setVisible(false); // 도감 패널과 상호 배타
     this.rankPanel.setText('불러오는 중...');
     this.rankPanel.setVisible(true);
     const [season, hof] = await Promise.all([getSeasonRanking(), getHallOfFame()]);
     if (!this.rankPanel.visible) return; // 응답 오는 동안 닫혔으면 무시
     this.rankPanel.setText(this.formatRankPanel(season, hof));
+  }
+
+  private toggleCodexPanel(): void {
+    if (this.codexPanel.visible) {
+      this.codexPanel.setVisible(false);
+      return;
+    }
+    this.rankPanel.setVisible(false); // 랭킹 패널과 상호 배타
+    this.codexPanel.setText(this.formatCodexPanel());
+    this.codexPanel.setVisible(true);
+  }
+
+  private formatCodexPanel(): string {
+    const s = this.sim;
+    const lines: string[] = ['[도감] (클릭하면 닫힘)', '', '자원 도감:'];
+    lines.push(
+      s.codexResources.length
+        ? s.codexResources.map((r) => RESOURCES[r]?.name ?? r).join(', ')
+        : '아직 없음',
+    );
+
+    lines.push('', '업적 도감:');
+    for (const a of ACHIEVEMENTS) {
+      lines.push(`${s.codexAchievements.includes(a.id) ? '✓' : '✗'} ${a.name}`);
+    }
+
+    lines.push('', '타일 도감 (히든):');
+    const found = TILE_PATTERNS.filter((p) => s.codexTilePatterns.includes(p.id));
+    lines.push(found.length ? found.map((p) => p.name).join(', ') : '아직 발견 없음');
+
+    return lines.join('\n');
+  }
+
+  // trigger 조건이 활성이고 아직 안 본 힌트면 토스트로 표시 + hintsSeen 에 영구 등록
+  private applyHint(id: HintId, active: boolean, text: string): void {
+    const [next, shown] = checkHint(this.sim, id, active);
+    this.sim = next;
+    if (shown) this.toast.setText(text);
   }
 
   private formatRankPanel(season: SeasonRanking | null, hof: HallOfFame | null): string {
@@ -384,12 +521,22 @@ export class FactoryScene extends Phaser.Scene {
   }
 
   update(_time: number, delta: number): void {
+    this.sim = refreshNpcQuest(this.sim, currentDayId());
+
     this.acc += delta;
     let guard = 0;
     while (this.acc >= TICK_MS && guard++ < 240) {
       this.sim = step(this.sim);
       this.acc -= TICK_MS;
     }
+
+    // M6 튜토리얼 힌트 3/3 — 첫 셧다운 발생 시 1회
+    this.applyHint(
+      'shutdown',
+      Object.keys(shutdownInfo(this.sim)).length > 0,
+      '재고가 가득 찼습니다! 긴급배출(무료)로 즉시 해제하거나, Storage 로 우회해보세요',
+    );
+
     this.draw();
   }
 
@@ -517,6 +664,7 @@ export class FactoryScene extends Phaser.Scene {
     }
 
     this.drawStatusText(shut);
+    this.drawNpc();
 
     const dirHint = DIRECTIONAL_TOOLS.has(this.tool) ? `  방향 [${DIR_ARROW[this.dir]}]` : '';
     const nodeHint = this.tool === 'node' ? `  자원 [${this.nodeResource()}]` : '';
@@ -527,6 +675,22 @@ export class FactoryScene extends Phaser.Scene {
     this.hud.setText(
       `골드 ${this.sim.gold}G   구역 ${this.sim.ownedZones.length}개${unlockHint}   도구 [${this.tool}]${dirHint}${nodeHint}`,
     );
+  }
+
+  // 오늘의 NPC 요청 표시 (플레이스홀더 텍스트, M7 재디자인)
+  private drawNpc(): void {
+    const npc = this.sim.npc;
+    if (!npc) {
+      this.npcText.setText('[NPC] 오늘 요청 없음');
+      return;
+    }
+    if (npc.done) {
+      this.npcText.setText('[NPC] 오늘 요청 완료! 내일 또 방문합니다');
+      return;
+    }
+    const name = RESOURCES[npc.resource]?.name ?? npc.resource;
+    const have = totalInStorage(this.sim.storage, npc.resource);
+    this.npcText.setText(`[NPC] ${name} x${npc.qty} 요청 (보유 ${have}/${npc.qty}) — NPC건네기 버튼`);
   }
 
   // 우측 상태판 (플레이스홀더 텍스트, M7 재디자인)

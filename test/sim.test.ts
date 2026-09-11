@@ -23,6 +23,10 @@ import {
   shutdownSet,
   shutdownInfo,
   normalizeState,
+  refreshNpcQuest,
+  fulfillNpcQuest,
+  checkHint,
+  totalInStorage,
   PlaceResult,
   SimState,
 } from '../src/sim/sim';
@@ -528,5 +532,162 @@ describe('M5 세이브 마이그레이션 (v4 → v5)', () => {
     } as unknown as SimState; // v4: totalRevenue 필드 없음
     const v5 = normalizeState(v4);
     expect(v5.totalRevenue).toBe(0);
+  });
+});
+
+describe('M6 NPC 일일 퀘스트 (하루 1회, day 는 인자로 주입 — 순수함수)', () => {
+  it('퀘스트가 없으면 오늘 날짜로 새로 발급', () => {
+    const s = refreshNpcQuest(initialState(), '2026-09-12');
+    expect(s.npc).not.toBeNull();
+    expect(s.npc?.day).toBe('2026-09-12');
+    expect(s.npc?.qty).toBe(CONFIG.npcQuestQty);
+    expect(s.unlockedResources).toContain(s.npc?.resource);
+  });
+
+  it('같은 날짜면 재발급하지 않는다', () => {
+    const s1 = refreshNpcQuest(initialState(), '2026-09-12');
+    const s2 = refreshNpcQuest(s1, '2026-09-12');
+    expect(s2.npc).toEqual(s1.npc);
+  });
+
+  it('날짜가 바뀌면 새 요청으로 교체된다(이월 없음)', () => {
+    const s1 = refreshNpcQuest(initialState(), '2026-09-12');
+    const s2 = refreshNpcQuest(s1, '2026-09-13');
+    expect(s2.npc?.day).toBe('2026-09-13');
+  });
+
+  it('같은 날짜 입력은 항상 같은 자원을 고른다(결정론적, 랜덤 아님)', () => {
+    const a = refreshNpcQuest(initialState(), '2026-09-12').npc?.resource;
+    const b = refreshNpcQuest(initialState(), '2026-09-12').npc?.resource;
+    expect(a).toBe(b);
+  });
+});
+
+describe('M6 NPC 퀘스트 완료 (Storage 인출 + 보상, 기본가 × 수량 × 알파배수)', () => {
+  const rig = (): SimState => ({
+    ...refreshNpcQuest(initialState(), '2026-09-12'),
+    storage: { st: { chip: 20 } },
+  });
+
+  it('보유량 충분하면 성공 — 골드/totalRevenue 지급, Storage 인출, npcQuestsDone +1, npc.done=true', () => {
+    const s = rig();
+    const { resource, qty } = s.npc!;
+    const expectedReward = effectivePrice(resource, 1) * qty * CONFIG.npcAlphaMultiplier;
+    const r = fulfillNpcQuest(s);
+    if (typeof r === 'string') throw new Error(r);
+    expect(r.gold).toBe(expectedReward);
+    expect(r.totalRevenue).toBe(expectedReward);
+    expect(r.npcQuestsDone).toBe(1);
+    expect(r.npc?.done).toBe(true);
+    expect(totalInStorage(r.storage, resource)).toBe(20 - qty);
+  });
+
+  it('보유량 부족하면 거부', () => {
+    const s = { ...rig(), storage: { st: { chip: 1 } } };
+    expect(typeof fulfillNpcQuest(s)).toBe('string');
+  });
+
+  it('오늘의 요청이 없으면 거부', () => {
+    expect(fulfillNpcQuest(initialState())).toBe('오늘의 NPC 요청이 없습니다');
+  });
+
+  it('오늘 이미 완료했으면 재요청 거부(같은 날짜엔 refreshNpcQuest 로도 재발급되지 않음)', () => {
+    const s = rig();
+    const done = fulfillNpcQuest(s);
+    if (typeof done === 'string') throw new Error(done);
+    expect(fulfillNpcQuest(done)).toBe('오늘 요청은 이미 완료했습니다');
+    const refreshed = refreshNpcQuest(done, done.npc!.day);
+    expect(refreshed.npc).toEqual(done.npc); // 같은 날짜 — 재발급 안 됨
+  });
+});
+
+describe('M6 자원 도감 — 생산 시 자동 등록', () => {
+  it('Node 가 자원을 배출하면 codexResources 에 등록된다', () => {
+    let s = connectStartKit(initialState());
+    for (let i = 0; i < 20; i++) s = step(s);
+    expect(s.codexResources).toContain('chip');
+  });
+});
+
+describe('M6 업적 도감 — 지표 임계값 달성 시 등록', () => {
+  it('누적수익 100 달성 시 sales_100 등록', () => {
+    let s = connectStartKit(initialState());
+    for (let i = 0; i < 2000 && s.totalRevenue < 100; i++) s = step(s);
+    expect(s.totalRevenue).toBeGreaterThanOrEqual(100);
+    expect(s.codexAchievements).toContain('sales_100');
+  });
+
+  it('구역 3개 보유 시 zones_3 등록', () => {
+    const s = step({ ...initialState(), ownedZones: ['0,0', '0,-1', '0,1'] });
+    expect(s.codexAchievements).toContain('zones_3');
+  });
+});
+
+describe('M6 타일 도감(히든) — 정사각형 곳간 패턴', () => {
+  it('Storage 4개를 2×2 로 인접 배치하면 발견된다', () => {
+    let s: SimState = { ...initialState(), gold: 100000, placeables: [] };
+    s = ok(placeStorage(s, [1, 1]));
+    s = ok(placeStorage(s, [2, 1]));
+    s = ok(placeStorage(s, [1, 2]));
+    s = ok(placeStorage(s, [2, 2]));
+    s = step(s);
+    expect(s.codexTilePatterns).toContain('storage_square');
+  });
+
+  it('정사각형이 아니면 발견되지 않는다', () => {
+    let s: SimState = { ...initialState(), gold: 100000, placeables: [] };
+    s = ok(placeStorage(s, [1, 1]));
+    s = ok(placeStorage(s, [3, 1]));
+    s = step(s);
+    expect(s.codexTilePatterns).not.toContain('storage_square');
+  });
+});
+
+describe('M6 튜토리얼 힌트 — 평생 1회', () => {
+  it('활성 상태면 힌트 id 를 반환하고 hintsSeen 에 등록, 이후엔 반환하지 않는다', () => {
+    const [s1, hint1] = checkHint(initialState(), 'start', true);
+    expect(hint1).toBe('start');
+    expect(s1.hintsSeen).toContain('start');
+
+    const [s2, hint2] = checkHint(s1, 'start', true);
+    expect(hint2).toBeNull();
+    expect(s2).toBe(s1); // 변화 없음 — 같은 참조 반환
+  });
+
+  it('비활성 상태면 등록도 반환도 하지 않는다', () => {
+    const [s, hint] = checkHint(initialState(), 'shutdown', false);
+    expect(hint).toBeNull();
+    expect(s.hintsSeen).toEqual([]);
+  });
+});
+
+describe('M6 세이브 마이그레이션 (v5 → v6)', () => {
+  it('normalizeState 가 NPC/도감/힌트 필드 기본값을 채운다', () => {
+    const v5 = {
+      tick: 1,
+      gold: 50,
+      totalRevenue: 50,
+      placeables: [],
+      cargo: [],
+      nodeCooldown: {},
+      converterCooldown: {},
+      converterBacklog: {},
+      storage: {},
+      freeConveyors: 0,
+      ownedZones: ['0,0'],
+      unlockedResources: ['chip'],
+      chipSold: 3,
+      nodeLevel: {},
+      storageLevel: {},
+      exporterLevel: {},
+      exporterProgress: {},
+    } as unknown as SimState; // v5: M6 필드 없음
+    const v6 = normalizeState(v5);
+    expect(v6.npc).toBeNull();
+    expect(v6.npcQuestsDone).toBe(0);
+    expect(v6.codexResources).toEqual([]);
+    expect(v6.codexAchievements).toEqual([]);
+    expect(v6.codexTilePatterns).toEqual([]);
+    expect(v6.hintsSeen).toEqual([]);
   });
 });

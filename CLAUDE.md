@@ -40,4 +40,5 @@
 - M3 완료 (로컬). A: 십자 3×3 구역 확장 + 칩판매 자원해금. B: 설비 업그레이드(골드+B1)·Node 레벨·Exporter 자동 레벨·tier 판매가. 곡선·배율 전부 임시(config.ts).
 - M4 단계 B: 서버 배포 완료. repo github.com/kimmunji2344/gongjang-game → Render `gongjang-server` → https://gongjang-server-bjug.onrender.com (라이브, API 스모크 통과). 클라 .env.production 에 그 URL, npm run build 완료. itch.io 업로드는 게임 완성 후로 사용자가 미룸.
 - M5 완료 (로컬): 시즌 랭킹(달력 월 단위)·WAR(효율^0.4×규모^0.35×log10(총자산)^0.25, 로그 미적용)·명예의 전당·랭킹 조회 REST API(`GET /api/rank`, `GET /api/rank/hall-of-fame`). 랭킹은 서버가 `PUT /api/save` 시 저장된 state 로 직접 계산(클라 제출 없음). SimState +`totalRevenue`(평생 누적, 리셋 없음). 세이브 v4→v5.
-- 세이브 v5. 다음: 사용자 git push (로컬 미푸시 커밋들) → M6(콘텐츠: NPC·도감·튜토리얼) 또는 사용자 지정 작업.
+- M6 완료 (로컬): NPC 일일 퀘스트(클라 시계 리셋, 전용 지급 UI, Storage 인출)·도감 3종(자원/업적/타일-히든)·튜토리얼 JIT 힌트 3종. 서버 변경 없음(전부 클라 로직). SimState +6 필드. 세이브 v5→v6. 브라우저 실플레이 검증 중 NPC 중복완료 버그 발견·수정.
+- 세이브 v6. 다음: 사용자 git push (로컬 미푸시 커밋들) → M7(디자인 일괄 교체) 또는 사용자 지정 작업.
