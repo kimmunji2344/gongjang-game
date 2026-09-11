@@ -2,11 +2,13 @@
 import { Router } from 'express';
 import { requireAuth, type AuthedRequest } from '../auth';
 import { saves } from '../db';
+import { updateRankingForSave } from '../rank';
 
 export const saveRouter = Router();
 saveRouter.use(requireAuth);
 
-const SAVE_VERSION = 4; // v4: M3-B 레벨링 필드 + storage 자원별 맵. v1~v3 은 클라 normalizeState 가 흡수.
+// v5: SimState.totalRevenue 추가(M5 WAR/시즌 랭킹용). v1~v4 는 클라 normalizeState 가 흡수.
+const SAVE_VERSION = 5;
 
 saveRouter.get('/', async (req, res) => {
   const userId = (req as AuthedRequest).userId as string;
@@ -26,5 +28,11 @@ saveRouter.put('/', async (req, res) => {
     { $set: { v: SAVE_VERSION, state, updatedAt: new Date() } },
     { upsert: true },
   );
+  try {
+    await updateRankingForSave(userId, state);
+  } catch (e) {
+    // 랭킹 갱신 실패가 세이브 자체를 실패시키면 안 됨 — 세이브는 이미 정상 처리됨
+    console.error('랭킹 갱신 실패 (세이브는 정상 처리됨):', e);
+  }
   res.json({ ok: true });
 });

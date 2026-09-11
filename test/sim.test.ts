@@ -496,3 +496,37 @@ describe('M3-B 세이브 마이그레이션 (v3 → v4)', () => {
     expect(v4.chipSold).toBe(3);
   });
 });
+
+describe('M5 총 수익 누적 (WAR 효율 계산용, 리셋 없는 평생 카운터)', () => {
+  it('판매마다 totalRevenue 가 gold 와 함께 누적된다', () => {
+    let s = connectStartKit(initialState());
+    for (let i = 0; i < 100; i++) s = step(s);
+    expect(s.totalRevenue).toBeGreaterThan(0);
+    expect(s.totalRevenue).toBe(s.gold); // 지출이 없었으므로 누적 수익 = 현재 골드
+  });
+});
+
+describe('M5 세이브 마이그레이션 (v4 → v5)', () => {
+  it('normalizeState 가 totalRevenue 기본값 0 을 채운다', () => {
+    const v4 = {
+      tick: 1,
+      gold: 50,
+      placeables: [],
+      cargo: [],
+      nodeCooldown: {},
+      converterCooldown: {},
+      converterBacklog: {},
+      storage: {},
+      freeConveyors: 0,
+      ownedZones: ['0,0'],
+      unlockedResources: ['chip'],
+      chipSold: 3,
+      nodeLevel: {},
+      storageLevel: {},
+      exporterLevel: {},
+      exporterProgress: {},
+    } as unknown as SimState; // v4: totalRevenue 필드 없음
+    const v5 = normalizeState(v4);
+    expect(v5.totalRevenue).toBe(0);
+  });
+});

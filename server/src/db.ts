@@ -4,6 +4,19 @@ import { requireEnv } from './env';
 
 export type UserDoc = { _id: string; pwHash: string; createdAt: Date };
 export type SaveDoc = { _id: string; v: number; state: unknown; updatedAt: Date };
+// M5: _id = `${userId}:${seasonId}`. baseline = 시즌 시작 시점의 totalRevenue (첫 저장 때 확정, 이후 불변).
+export type RankingDoc = {
+  _id: string;
+  userId: string;
+  seasonId: string;
+  baseline: number;
+  seasonRevenue: number;
+  scale: number;
+  efficiency: number;
+  totalAssets: number;
+  war: number;
+  updatedAt: Date;
+};
 
 let db: Db | null = null;
 
@@ -31,3 +44,4 @@ function coll<T extends { _id: string }>(name: string): Collection<T> {
 
 export const users = (): Collection<UserDoc> => coll<UserDoc>('users');
 export const saves = (): Collection<SaveDoc> => coll<SaveDoc>('saves');
+export const rankings = (): Collection<RankingDoc> => coll<RankingDoc>('rankings');

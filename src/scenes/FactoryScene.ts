@@ -28,6 +28,7 @@ import {
 } from '../sim/sim';
 import { buyableZones, parseZone, zoneName, zoneOf, zoneTileBounds } from '../sim/zones';
 import { putSave } from '../net/save';
+import { getHallOfFame, getSeasonRanking, HallOfFame, SeasonRanking } from '../net/rank';
 
 type Tool =
   | 'zone'
@@ -106,6 +107,7 @@ export class FactoryScene extends Phaser.Scene {
   private statusText!: Phaser.GameObjects.Text;
   private toast!: Phaser.GameObjects.Text;
   private toolButtons: Phaser.GameObjects.Text[] = [];
+  private rankPanel!: Phaser.GameObjects.Text; // M5 랭킹/명예의전당 패널 (플레이스홀더 — M7 재디자인)
 
   constructor() {
     super('factory');
@@ -197,6 +199,53 @@ export class FactoryScene extends Phaser.Scene {
         },
       );
 
+    // 랭킹 버튼 + 패널 (플레이스홀더 — M7 재디자인). 클릭 시 열고/닫기 토글.
+    this.add
+      .text(700, 50, '랭킹', {
+        color: '#111',
+        backgroundColor: '#cfe0f0',
+        padding: { x: 10, y: 5 },
+        fontSize: '13px',
+      })
+      .setInteractive({ useHandCursor: true })
+      .on(
+        'pointerdown',
+        (
+          _p: Phaser.Input.Pointer,
+          _x: number,
+          _y: number,
+          ev: Phaser.Types.Input.EventData,
+        ) => {
+          ev.stopPropagation();
+          void this.toggleRankPanel();
+        },
+      );
+
+    this.rankPanel = this.add
+      .text(190, 100, '', {
+        color: '#111',
+        backgroundColor: '#ffffff',
+        padding: { x: 10, y: 10 },
+        fontSize: '12px',
+        fontFamily: 'monospace',
+        wordWrap: { width: 452 },
+      })
+      .setDepth(10)
+      .setVisible(false)
+      .setInteractive({ useHandCursor: true })
+      .on(
+        'pointerdown',
+        (
+          _p: Phaser.Input.Pointer,
+          _x: number,
+          _y: number,
+          ev: Phaser.Types.Input.EventData,
+        ) => {
+          ev.stopPropagation();
+          this.rankPanel.setVisible(false);
+        },
+      );
+
     // 자동 저장 (Code.md 확정: 30초 주기)
     this.time.addEvent({
       delay: CONFIG.autosaveMs,
@@ -214,6 +263,42 @@ export class FactoryScene extends Phaser.Scene {
     } else if (!ok) {
       this.toast.setText('자동저장 실패');
     }
+  }
+
+  private async toggleRankPanel(): Promise<void> {
+    if (this.rankPanel.visible) {
+      this.rankPanel.setVisible(false);
+      return;
+    }
+    this.rankPanel.setText('불러오는 중...');
+    this.rankPanel.setVisible(true);
+    const [season, hof] = await Promise.all([getSeasonRanking(), getHallOfFame()]);
+    if (!this.rankPanel.visible) return; // 응답 오는 동안 닫혔으면 무시
+    this.rankPanel.setText(this.formatRankPanel(season, hof));
+  }
+
+  private formatRankPanel(season: SeasonRanking | null, hof: HallOfFame | null): string {
+    const lines: string[] = [`[시즌 랭킹 ${season?.season ?? ''}] (클릭하면 닫힘)`];
+    if (!season || season.entries.length === 0) {
+      lines.push('기록 없음');
+    } else {
+      for (const e of season.entries) {
+        lines.push(`${e.rank}위 ${e.userId}  수익 ${e.seasonRevenue}G  WAR ${e.war.toFixed(1)}`);
+      }
+    }
+    lines.push('', '[명예의 전당]');
+    const seasons = hof?.seasons ?? [];
+    if (seasons.length === 0) {
+      lines.push('지난 시즌 없음');
+    } else {
+      for (const s of seasons) {
+        lines.push(s.seasonId);
+        for (const e of s.entries.slice(0, 3)) {
+          lines.push(`  ${e.rank}위 ${e.userId}  수익 ${e.seasonRevenue}G`);
+        }
+      }
+    }
+    return lines.join('\n');
   }
 
   private refreshToolButtons(): void {

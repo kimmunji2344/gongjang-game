@@ -38,5 +38,6 @@
 - M4 단계 A 완료 (실 인증 + 세이브, 로컬). 단계 B = GitHub 원격 + Render 배포 대기.
 - M2 완료 (가공·저장·셧다운, 로컬). 자원/가공품/레시피는 임시 코드(A1/A2/B1/C1, R1/R2) — 용어정리 확정 시 src/data/{resources,recipes}.ts 교체.
 - M3 완료 (로컬). A: 십자 3×3 구역 확장 + 칩판매 자원해금. B: 설비 업그레이드(골드+B1)·Node 레벨·Exporter 자동 레벨·tier 판매가. 곡선·배율 전부 임시(config.ts).
-- M4 단계 B: 서버 배포 완료. repo github.com/kimmunji2344/gongjang-game → Render `gongjang-server` → https://gongjang-server-bjug.onrender.com (라이브, API 스모크 통과). 클라 .env.production 에 그 URL, npm run build 완료. 남음: 사용자 git push (로컬 3커밋) + dist/ zip 을 itch.io 업로드.
-- 세이브 v4 (storage = 자원별 맵). 다음: itch.io 업로드 후 M5(랭킹·WAR).
+- M4 단계 B: 서버 배포 완료. repo github.com/kimmunji2344/gongjang-game → Render `gongjang-server` → https://gongjang-server-bjug.onrender.com (라이브, API 스모크 통과). 클라 .env.production 에 그 URL, npm run build 완료. itch.io 업로드는 게임 완성 후로 사용자가 미룸.
+- M5 완료 (로컬): 시즌 랭킹(달력 월 단위)·WAR(효율^0.4×규모^0.35×log10(총자산)^0.25, 로그 미적용)·명예의 전당·랭킹 조회 REST API(`GET /api/rank`, `GET /api/rank/hall-of-fame`). 랭킹은 서버가 `PUT /api/save` 시 저장된 state 로 직접 계산(클라 제출 없음). SimState +`totalRevenue`(평생 누적, 리셋 없음). 세이브 v4→v5.
+- 세이브 v5. 다음: 사용자 git push (로컬 미푸시 커밋들) → M6(콘텐츠: NPC·도감·튜토리얼) 또는 사용자 지정 작업.

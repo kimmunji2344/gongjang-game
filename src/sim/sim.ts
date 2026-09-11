@@ -38,6 +38,7 @@ export type StorageMap = Readonly<Record<string, Readonly<Record<string, number>
 export type SimState = {
   readonly tick: number;
   readonly gold: number;
+  readonly totalRevenue: number; // M5: 평생 누적 판매 수익 (지출과 무관, 리셋 없음) — WAR 효율·시즌 랭킹 산출용
   readonly placeables: readonly Placeable[];
   readonly cargo: readonly Cargo[];
   readonly nodeCooldown: Readonly<Record<string, number>>;       // nodeId → 다음 생산까지 남은 틱
@@ -95,6 +96,7 @@ export function initialState(): SimState {
   return {
     tick: 0,
     gold: CONFIG.startingGold,
+    totalRevenue: 0,
     placeables,
     cargo: [],
     nodeCooldown: {
@@ -130,10 +132,12 @@ function normalizeStorage(raw: unknown): Record<string, Record<string, number>> 
 //  v1 → v2 : M2 필드(converter*/storage) 채움 + Cargo.nodeId → sourceId
 //  v2 → v3 : M3-A 필드(ownedZones/unlockedResources/chipSold) 채움
 //  v3 → v4 : M3-B 레벨 필드 채움 + storage 자원별 맵으로 변환(v3 내용 폐기)
+//  v4 → v5 : M5 totalRevenue 필드 채움(기본 0)
 export function normalizeState(s: SimState): SimState {
   type LegacyCargo = Cargo & { nodeId?: string };
   return {
     ...s,
+    totalRevenue: s.totalRevenue ?? 0,
     cargo: (s.cargo ?? []).map((c) => {
       const lc = c as LegacyCargo;
       return lc.sourceId
@@ -299,6 +303,7 @@ export function step(state: SimState): SimState {
   const perTile = gradeToTicks(CONVEYOR_GRADE, CONFIG.tickHz);
 
   let gold = state.gold;
+  let totalRevenue = state.totalRevenue;
   let chipSold = state.chipSold;
   const nextCargo: Cargo[] = [];
   const backlog: Record<string, Record<string, number>> = {};
@@ -308,7 +313,9 @@ export function step(state: SimState): SimState {
   const exporterProgress: Record<string, number> = { ...state.exporterProgress };
 
   const sell = (resource: string, exporterId: string): void => {
-    gold += effectivePrice(resource, state.exporterLevel[exporterId] ?? 1);
+    const price = effectivePrice(resource, state.exporterLevel[exporterId] ?? 1);
+    gold += price;
+    totalRevenue += price;
     if (resource === 'chip') chipSold += 1;
     exporterProgress[exporterId] = (exporterProgress[exporterId] ?? 0) + 1;
   };
@@ -472,6 +479,7 @@ export function step(state: SimState): SimState {
     ...state,
     tick: state.tick + 1,
     gold,
+    totalRevenue,
     chipSold,
     exporterLevel,
     exporterProgress,

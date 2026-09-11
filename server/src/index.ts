@@ -4,6 +4,7 @@ import cors from 'cors';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { connectDb } from './db';
 import { authRouter } from './routes/auth';
+import { rankRouter } from './routes/rank';
 import { saveRouter } from './routes/save';
 
 const app = express();
@@ -15,6 +16,7 @@ app.get('/api/health', (_req, res) => {
 });
 app.use('/api/auth', authRouter);
 app.use('/api/save', saveRouter);
+app.use('/api/rank', rankRouter);
 
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   console.error('처리되지 않은 오류:', err);
