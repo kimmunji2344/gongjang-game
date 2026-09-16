@@ -5,7 +5,7 @@ import { CONFIG } from '../data/config';
 import { RESOURCES } from '../data/resources';
 import { gradeToTicks } from '../data/speed';
 import { TILE_PATTERNS } from '../data/tilePatterns';
-import { DIR_ARROW, DIR_VEC, Dir, Tile } from '../sim/grid';
+import { DIR_ARROW, DIR_VEC, Dir, Tile, placeableAt } from '../sim/grid';
 import { currentDayId } from '../sim/day';
 import {
   HintId,
@@ -14,6 +14,7 @@ import {
   buyZone,
   checkHint,
   computeRoutes,
+  conveyorGrade,
   findPath,
   fulfillNpcQuest,
   initialState,
@@ -23,6 +24,7 @@ import {
   placeStorage,
   refreshNpcQuest,
   removePlaceable,
+  rotatePlaceable,
   shutdownInfo,
   step,
   stoppedPlaceables,
@@ -46,8 +48,11 @@ type Tool =
   | 'converter'
   | 'storage'
   | 'upgrade'
+  | 'rotate'
   | 'vent'
   | 'remove';
+
+const LONG_PRESS_MS = 500; // 2026-09-17 확정: 짧게 클릭=회전, 길게 누르면 방향 선택
 
 // 설치 전 회전 순서 (R 키). 상 → 우 → 하 → 좌 → 반복.
 const DIR_CYCLE: readonly Dir[] = ['N', 'E', 'S', 'W'];
@@ -84,6 +89,7 @@ const TOOLS: readonly Tool[] = [
   'converter',
   'storage',
   'upgrade',
+  'rotate',
   'vent',
   'remove',
 ];
@@ -95,6 +101,7 @@ const TOOL_LABEL: Record<Tool, string> = {
   converter: 'Converter',
   storage: 'Storage',
   upgrade: '업글',
+  rotate: '회전',
   vent: '긴급배출',
   remove: '철거',
 };
@@ -118,6 +125,8 @@ export class FactoryScene extends Phaser.Scene {
   private rankPanel!: Phaser.GameObjects.Text; // M5 랭킹/명예의전당 패널 (플레이스홀더 — M7 재디자인)
   private npcText!: Phaser.GameObjects.Text; // M6 NPC 오늘의 요청 표시
   private codexPanel!: Phaser.GameObjects.Text; // M6 도감(자원/업적/타일) 패널
+  private dirPicker: Phaser.GameObjects.Text[] = []; // 회전 도구 길게 누르기 — 4방향 선택 버튼
+  private rotateDownAt: { tile: Tile; time: number } | null = null;
 
   constructor() {
     super('factory');
@@ -140,7 +149,8 @@ export class FactoryScene extends Phaser.Scene {
     this.add.text(
       16,
       74,
-      '[Node]검정 [Exporter]회색 [Converter]보라 [Storage]청록 · R=회전 N=자원 · 업글=Node/Storage 클릭(골드+B1) · Exporter는 자동레벨',
+      '[Node]검정 [Exporter]회색 [Converter]보라 [Storage]청록 · R=설치전 회전 N=자원 · ' +
+        '업글=Node/Storage/컨베이어 클릭 · 회전 도구=놓인 설비 클릭(짧게=회전/길게=방향선택) · Exporter는 자동레벨',
       { color: '#555', fontSize: '10px' },
     );
 
@@ -176,6 +186,8 @@ export class FactoryScene extends Phaser.Scene {
           ev: Phaser.Types.Input.EventData,
         ) => {
           ev.stopPropagation();
+          this.closeDirectionPicker();
+          this.rotateDownAt = null;
           this.tool = t;
           this.refreshToolButtons();
           // M6 튜토리얼 힌트 2/3 — 첫 Converter 도구 선택 시 1회
@@ -191,7 +203,27 @@ export class FactoryScene extends Phaser.Scene {
     });
     this.refreshToolButtons();
 
-    this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => this.onGridClick(pointer));
+    this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+      if (this.dirPicker.length > 0) {
+        this.closeDirectionPicker(); // 바깥 클릭 = 취소만
+        return;
+      }
+      if (this.tool === 'rotate') {
+        this.rotateDownAt = { tile: this.tileFromPointer(pointer), time: this.time.now };
+        return;
+      }
+      this.onGridClick(pointer);
+    });
+    this.input.on('pointerup', (_pointer: Phaser.Input.Pointer) => {
+      if (this.tool !== 'rotate' || !this.rotateDownAt) return;
+      const { tile, time } = this.rotateDownAt;
+      this.rotateDownAt = null;
+      if (this.time.now - time >= LONG_PRESS_MS) {
+        this.openDirectionPicker(tile);
+      } else {
+        this.rotateOneStep(tile);
+      }
+    });
     this.input.keyboard?.on('keydown-R', () => {
       this.dir = nextDir(this.dir);
     });
@@ -469,11 +501,15 @@ export class FactoryScene extends Phaser.Scene {
     return list[this.nodeResIdx % list.length] ?? 'chip';
   }
 
-  private onGridClick(pointer: Phaser.Input.Pointer): void {
+  private tileFromPointer(pointer: Phaser.Input.Pointer): Tile {
     const v = this.view;
     const tx = v.minX + Math.floor((pointer.x - v.ox) / v.cell);
     const ty = v.minY + Math.floor((pointer.y - v.oy) / v.cell);
-    const tile: Tile = [tx, ty];
+    return [tx, ty];
+  }
+
+  private onGridClick(pointer: Phaser.Input.Pointer): void {
+    const tile = this.tileFromPointer(pointer);
 
     let result: PlaceResult;
     switch (this.tool) {
@@ -504,6 +540,10 @@ export class FactoryScene extends Phaser.Scene {
       case 'remove':
         result = removePlaceable(this.sim, tile);
         break;
+      case 'rotate':
+        // 회전 도구는 pointerdown/up 에서 길이를 재서 별도 처리 — 여기로는 오지 않음(안전망)
+        result = '놓인 설비를 클릭하세요';
+        break;
     }
 
     if (typeof result === 'string') {
@@ -513,11 +553,80 @@ export class FactoryScene extends Phaser.Scene {
       this.sim = result;
       if (this.tool === 'upgrade') {
         const c = upgradeCost(before, tile);
-        this.toast.setText(c ? `업그레이드 (−${c.gold}G −${c.material}${c.materialQty})` : '업그레이드됨');
+        const matPart = c?.material ? ` −${RESOURCES[c.material]?.name ?? c.material}${c.materialQty}` : '';
+        this.toast.setText(c ? `업그레이드 (−${c.gold}G${matPart})` : '업그레이드됨');
       } else {
         this.toast.setText('');
       }
     }
+  }
+
+  private applyRotate(tile: Tile, dir: Dir): void {
+    const result = rotatePlaceable(this.sim, tile, dir);
+    if (typeof result === 'string') {
+      this.toast.setText(result);
+      return;
+    }
+    this.sim = result;
+    this.toast.setText('');
+  }
+
+  private rotateOneStep(tile: Tile): void {
+    const p = placeableAt(this.sim.placeables, tile);
+    if (!p || (p.kind !== 'node' && p.kind !== 'conveyor' && p.kind !== 'converter')) {
+      this.toast.setText('방향이 없는 설비입니다');
+      return;
+    }
+    this.applyRotate(tile, nextDir(p.dir));
+  }
+
+  // 길게 누르기 — 타일 주변에 N/E/S/W 4방향 버튼을 띄워 원하는 방향을 바로 선택
+  private openDirectionPicker(tile: Tile): void {
+    const p = placeableAt(this.sim.placeables, tile);
+    if (!p || (p.kind !== 'node' && p.kind !== 'conveyor' && p.kind !== 'converter')) {
+      this.toast.setText('방향이 없는 설비입니다');
+      return;
+    }
+    this.closeDirectionPicker();
+    const c = this.center(tile);
+    const offset: Record<Dir, readonly [number, number]> = {
+      N: [0, -24],
+      E: [24, 0],
+      S: [0, 24],
+      W: [-24, 0],
+    };
+    (['N', 'E', 'S', 'W'] as const).forEach((d) => {
+      const [dx, dy] = offset[d];
+      const btn = this.add
+        .text(c.x + dx, c.y + dy, DIR_ARROW[d], {
+          color: '#fff',
+          backgroundColor: '#2288cc',
+          padding: { x: 5, y: 2 },
+          fontSize: '13px',
+        })
+        .setOrigin(0.5)
+        .setDepth(20)
+        .setInteractive({ useHandCursor: true })
+        .on(
+          'pointerdown',
+          (
+            _p: Phaser.Input.Pointer,
+            _x: number,
+            _y: number,
+            ev: Phaser.Types.Input.EventData,
+          ) => {
+            ev.stopPropagation();
+            this.applyRotate(tile, d);
+            this.closeDirectionPicker();
+          },
+        );
+      this.dirPicker.push(btn);
+    });
+  }
+
+  private closeDirectionPicker(): void {
+    this.dirPicker.forEach((b) => b.destroy());
+    this.dirPicker = [];
   }
 
   update(_time: number, delta: number): void {
@@ -648,7 +757,6 @@ export class FactoryScene extends Phaser.Scene {
       }
     }
 
-    const perTile = gradeToTicks(10, CONFIG.tickHz);
     g.fillStyle(COLOR.cargo, 1);
     for (const cargo of this.sim.cargo) {
       const src = this.sim.placeables.find((p) => p.id === cargo.sourceId);
@@ -659,6 +767,10 @@ export class FactoryScene extends Phaser.Scene {
       const to = path[cargo.index];
       const a = this.center(from);
       const b = this.center(to);
+      // 2026-09-17 확정: 컨베이어도 레벨업 가능 — 그 칸의 실제 컨베이어 등급으로 애니메이션 속도 계산
+      const tileConveyor = placeableAt(this.sim.placeables, to);
+      const level = tileConveyor ? this.sim.conveyorLevel[tileConveyor.id] ?? 1 : 1;
+      const perTile = gradeToTicks(conveyorGrade(level), CONFIG.tickHz);
       const k = Math.min(1, cargo.ticksOnTile / perTile);
       g.fillCircle(a.x + (b.x - a.x) * k, a.y + (b.y - a.y) * k, Math.max(2, v.cell * 0.11));
     }
@@ -668,7 +780,7 @@ export class FactoryScene extends Phaser.Scene {
 
     const dirHint = DIRECTIONAL_TOOLS.has(this.tool) ? `  방향 [${DIR_ARROW[this.dir]}]` : '';
     const nodeHint = this.tool === 'node' ? `  자원 [${this.nodeResource()}]` : '';
-    const locked = !this.sim.unlockedResources.includes('A1');
+    const locked = !this.sim.unlockedResources.includes('scrap');
     const unlockHint = locked
       ? `  칩판매 ${this.sim.chipSold}/${CONFIG.resourceUnlockChips}`
       : '';
@@ -733,7 +845,12 @@ export class FactoryScene extends Phaser.Scene {
       } else if (p.kind === 'exporter') {
         const lv = s.exporterLevel[p.id] ?? 1;
         const prog = s.exporterProgress[p.id] ?? 0;
-        lines.push(`[E] ${p.id} Lv${lv} (+${Math.round((lv - 1) * 10)}%, ${prog}/${10 * lv})`);
+        const pct = Math.round(lv * CONFIG.exporterRevenuePctPerLevel * 100);
+        const next = lv < CONFIG.maxLevel ? `${prog}/${CONFIG.exporterLevelThresholds[lv - 1]}` : '최대';
+        lines.push(`[E] ${p.id} Lv${lv} (+${pct}%, ${next})`);
+      } else if (p.kind === 'conveyor') {
+        const lv = s.conveyorLevel[p.id] ?? 1;
+        if (lv > 1) lines.push(`[V] ${p.id} Lv${lv}`);
       }
     }
     this.statusText.setText(lines.join('\n'));

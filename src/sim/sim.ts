@@ -55,6 +55,7 @@ export type SimState = {
   // M3-B 레벨링 (전부 기본 레벨 1 / 진행도 0)
   readonly nodeLevel: Readonly<Record<string, number>>;
   readonly storageLevel: Readonly<Record<string, number>>;
+  readonly conveyorLevel: Readonly<Record<string, number>>; // 2026-09-17 확정: 컨베이어도 업그레이드 가능
   readonly exporterLevel: Readonly<Record<string, number>>;
   readonly exporterProgress: Readonly<Record<string, number>>; // exporterId → 레벨업 진행 누적(판매 수)
   // M6 콘텐츠 (NPC · 도감 · 튜토리얼)
@@ -85,10 +86,11 @@ export function storageCap(level: number): number {
 }
 
 // 1개 판매 시 받는 골드 = 기본가 × tier 배율 × Exporter 레벨 배율 (정수 반올림)
+// 2026-09-17 확정: Exporter 레벨 배율 = 1 + 레벨×1% (레벨5=+5%, 레벨10=+10%)
 export function effectivePrice(resource: string, exporterLevel: number): number {
   const def = RESOURCES[resource];
   const tierMult = 1 + def.tier * CONFIG.tierPriceBonus;
-  const exMult = 1 + (exporterLevel - 1) * CONFIG.exporterLevelBonus;
+  const exMult = 1 + exporterLevel * CONFIG.exporterRevenuePctPerLevel;
   return Math.round(def.sellPrice * tierMult * exMult);
 }
 
@@ -97,7 +99,10 @@ export function storageTotal(state: SimState, storageId: string): number {
   return Object.values(state.storage[storageId] ?? {}).reduce((a, b) => a + b, 0);
 }
 
-const CONVEYOR_GRADE = 10; // 임시 =10: 컨베이어 이동 속도 등급 (오브젝트별 매핑표 미정)
+// 컨베이어 유효 등급 (2026-09-17 확정: 레벨 오를수록 등급↓ = 빨라짐, 등급 1 캡 — Node 와 동일한 형태)
+export function conveyorGrade(level: number): number {
+  return Math.max(1, CONFIG.conveyorStartGrade - (level - 1) * CONFIG.conveyorGradePerLevel);
+}
 
 // ---- 초기 상태 --------------------------------------------------------------
 
@@ -125,6 +130,7 @@ export function initialState(): SimState {
     chipSold: 0,
     nodeLevel: {},
     storageLevel: {},
+    conveyorLevel: {},
     exporterLevel: {},
     exporterProgress: {},
     npc: null,
@@ -137,13 +143,34 @@ export function initialState(): SimState {
 }
 
 // v3 이하 storage(storageId → number) 를 v4(storageId → resource → 개수) 로 변환.
-// v3 는 자원 종류를 기록하지 않았으므로 내용은 폐기(건물·레벨은 유지).
-function normalizeStorage(raw: unknown): Record<string, Record<string, number>> {
+// v3 는 자원 종류를 기록하지 않았으므로 내용은 폐기(건물·레벨은 유지). v7 이름 이전도 함께 적용.
+function normalizeStorage(
+  raw: unknown,
+  renameResource: (r: string) => string,
+): Record<string, Record<string, number>> {
   const out: Record<string, Record<string, number>> = {};
   if (raw && typeof raw === 'object') {
     for (const [id, v] of Object.entries(raw as Record<string, unknown>)) {
-      out[id] = v && typeof v === 'object' ? { ...(v as Record<string, number>) } : {};
+      const bucket: Record<string, number> = {};
+      if (v && typeof v === 'object') {
+        for (const [r, n] of Object.entries(v as Record<string, number>)) bucket[renameResource(r)] = n;
+      }
+      out[id] = bucket;
     }
+  }
+  return out;
+}
+
+// converterBacklog(convId → resource → 개수) 의 자원 키를 이전(v7 이름 이전)
+function renameBacklogResources(
+  raw: Readonly<Record<string, Readonly<Record<string, number>>>> | undefined,
+  renameResource: (r: string) => string,
+): Record<string, Record<string, number>> {
+  const out: Record<string, Record<string, number>> = {};
+  for (const [id, bl] of Object.entries(raw ?? {})) {
+    const bucket: Record<string, number> = {};
+    for (const [r, n] of Object.entries(bl)) bucket[renameResource(r)] = n;
+    out[id] = bucket;
   }
   return out;
 }
@@ -154,29 +181,36 @@ function normalizeStorage(raw: unknown): Record<string, Record<string, number>> 
 //  v3 → v4 : M3-B 레벨 필드 채움 + storage 자원별 맵으로 변환(v3 내용 폐기)
 //  v4 → v5 : M5 totalRevenue 필드 채움(기본 0)
 //  v5 → v6 : M6 NPC/도감/튜토리얼 필드 채움(기본값)
+//  v6 → v7 : 컨베이어 업그레이드 필드 채움(기본값), 자원 A1/A2/B1/C1 → scrap/debris/core/plate 이름 이전
 export function normalizeState(s: SimState): SimState {
   type LegacyCargo = Cargo & { nodeId?: string };
+  const RENAMED: Record<string, string> = { A1: 'scrap', A2: 'debris', B1: 'core', C1: 'plate' };
+  const renameResource = (r: string): string => RENAMED[r] ?? r;
   return {
     ...s,
     totalRevenue: s.totalRevenue ?? 0,
-    npc: s.npc ?? null,
+    conveyorLevel: s.conveyorLevel ?? {},
+    npc: s.npc ? { ...s.npc, resource: renameResource(s.npc.resource) } : null,
     npcQuestsDone: s.npcQuestsDone ?? 0,
-    codexResources: s.codexResources ?? [],
+    codexResources: (s.codexResources ?? []).map(renameResource),
     codexAchievements: s.codexAchievements ?? [],
     codexTilePatterns: s.codexTilePatterns ?? [],
     hintsSeen: s.hintsSeen ?? [],
     cargo: (s.cargo ?? []).map((c) => {
       const lc = c as LegacyCargo;
+      const resource = renameResource(lc.resource);
       return lc.sourceId
-        ? c
-        : { resource: lc.resource, sourceId: lc.nodeId ?? '', index: lc.index, ticksOnTile: lc.ticksOnTile };
+        ? { ...c, resource }
+        : { resource, sourceId: lc.nodeId ?? '', index: lc.index, ticksOnTile: lc.ticksOnTile };
     }),
     nodeCooldown: s.nodeCooldown ?? {},
     converterCooldown: s.converterCooldown ?? {},
-    converterBacklog: s.converterBacklog ?? {},
-    storage: normalizeStorage(s.storage),
+    converterBacklog: renameBacklogResources(s.converterBacklog, renameResource),
+    storage: normalizeStorage(s.storage, renameResource),
     ownedZones: s.ownedZones?.length ? s.ownedZones : [CENTER_ZONE],
-    unlockedResources: s.unlockedResources?.length ? s.unlockedResources : ['chip'],
+    unlockedResources: s.unlockedResources?.length
+      ? s.unlockedResources.map(renameResource)
+      : ['chip'],
     chipSold: s.chipSold ?? 0,
     nodeLevel: s.nodeLevel ?? {},
     storageLevel: s.storageLevel ?? {},
@@ -327,7 +361,12 @@ export function step(state: SimState): SimState {
   const routes = computeRoutes(state.placeables);
   const shut = shutdownSet(state);
   const frozen = frozenSet(state.placeables, routes, shut);
-  const perTile = gradeToTicks(CONVEYOR_GRADE, CONFIG.tickHz);
+  // 2026-09-17 확정: 컨베이어도 레벨업 가능 — 타일마다(그 컨베이어의 레벨마다) 통과 시간이 다르다.
+  const ticksForTile = (tile: Tile): number => {
+    const p = placeableAt(state.placeables, tile);
+    const level = p ? state.conveyorLevel[p.id] ?? 1 : 1;
+    return gradeToTicks(conveyorGrade(level), CONFIG.tickHz);
+  };
 
   let gold = state.gold;
   let totalRevenue = state.totalRevenue;
@@ -397,6 +436,7 @@ export function step(state: SimState): SimState {
     const path = route.path;
     if (c.index >= path.length - 1) continue; // 방어 (경로 짧아짐)
 
+    const perTile = ticksForTile(path[c.index]);
     const t = c.ticksOnTile + 1;
     if (t < perTile) {
       nextCargo.push({ ...c, ticksOnTile: t });
@@ -485,19 +525,19 @@ export function step(state: SimState): SimState {
     if (Object.keys(trimmed).length > 0) converterBacklog[id] = trimmed;
   }
 
-  // 5) 자원 해금 — 누적 칩 판매가 한도에 도달하면 A1·A2 해금 (임시 대상, 실제 이름은 용어정리 확정 시)
+  // 5) 자원 해금 — 누적 칩 판매가 한도에 도달하면 스크랩·데브리 해금
   const unlockedResources =
-    chipSold >= CONFIG.resourceUnlockChips && !state.unlockedResources.includes('A1')
-      ? [...state.unlockedResources, 'A1', 'A2']
+    chipSold >= CONFIG.resourceUnlockChips && !state.unlockedResources.includes('scrap')
+      ? [...state.unlockedResources, 'scrap', 'debris']
       : state.unlockedResources;
 
-  // 6) Exporter 레벨업 — 누적 판매 수가 한도(base × 현재 레벨) 이상이면 레벨++ (초과분 이월)
+  // 6) Exporter 레벨업 — 확정 임계값 표(exporterLevelThresholds) 도달 시 레벨++ (초과분 이월), 최대레벨 캡
   const exporterLevel: Record<string, number> = { ...state.exporterLevel };
   for (const exId of Object.keys(exporterProgress)) {
     let lvl = exporterLevel[exId] ?? 1;
     let prog = exporterProgress[exId];
-    while (prog >= CONFIG.exporterLevelUpBase * lvl) {
-      prog -= CONFIG.exporterLevelUpBase * lvl;
+    while (lvl < CONFIG.maxLevel && prog >= CONFIG.exporterLevelThresholds[lvl - 1]) {
+      prog -= CONFIG.exporterLevelThresholds[lvl - 1];
       lvl += 1;
     }
     exporterLevel[exId] = lvl;
@@ -582,6 +622,11 @@ export function placeConveyor(state: SimState, tile: Tile, dir: Dir): PlaceResul
   };
 }
 
+// Node 설치비 = base × 현재 보유 Node 개수 (2026-09-17 확정 — 구역 확장 비용과 동일한 방식, 살수록 오름).
+export function nodeCost(state: SimState): number {
+  return CONFIG.nodeCostBase * state.placeables.filter((p) => p.kind === 'node').length;
+}
+
 export function placeBuilding(
   state: SimState,
   kind: 'node' | 'exporter',
@@ -594,7 +639,8 @@ export function placeBuilding(
   if (kind === 'node' && !state.unlockedResources.includes(resource)) {
     return '해금되지 않은 자원입니다';
   }
-  if (state.gold < CONFIG.buildingCost) return `골드 부족 (필요 ${CONFIG.buildingCost}G)`;
+  const cost = kind === 'node' ? nodeCost(state) : CONFIG.exporterCost;
+  if (state.gold < cost) return `골드 부족 (필요 ${cost}G)`;
   if (kind === 'node' && facesHeadOn(state.placeables, tile, dir)) return HEAD_ON_MSG;
 
   const id = `${kind}-${tile[0]}-${tile[1]}`;
@@ -603,7 +649,7 @@ export function placeBuilding(
 
   const next: SimState = {
     ...state,
-    gold: state.gold - CONFIG.buildingCost,
+    gold: state.gold - cost,
     placeables: [...state.placeables, placeable],
   };
   if (kind === 'node') {
@@ -659,10 +705,9 @@ export function ventConverter(state: SimState, tile: Tile): PlaceResult {
   return { ...state, converterBacklog, converterCooldown };
 }
 
-// 다음 구역 확장 비용 = base × 현재 소유 구역 수 (선형 임시, 실제 지수곡선은 밸런싱 때).
-// ponytail: 선형 근사 — Obsidian 공식은 base × 성장률^(n-1).
+// 다음 구역 확장 비용 = base × 성장률^(n-1), n = 지금까지 소유한 구역 수 (2026-09-17 확정, 지수식).
 export function zoneCost(state: SimState): number {
-  return CONFIG.zoneCostBase * state.ownedZones.length;
+  return Math.round(CONFIG.zoneCostBase * CONFIG.zoneCostGrowth ** (state.ownedZones.length - 1));
 }
 
 // 확장 구역 구매 — 소유 구역과 변이 맞닿은 구역만. 코너는 인접 팔을 먼저 사야 가능(구조로 강제).
@@ -705,66 +750,95 @@ function withdrawFromStorage(
   return out;
 }
 
-export type UpgradeCost = { gold: number; material: string; materialQty: number };
+export type UpgradeCost = { gold: number; material: string | null; materialQty: number };
 
-// tile 설비의 다음 레벨업 비용 (Node/Storage 만). Exporter 는 자동 레벨업이라 대상 아님.
+const UPGRADEABLE = ['node', 'storage', 'conveyor'] as const;
+type UpgradeableKind = (typeof UPGRADEABLE)[number];
+const isUpgradeable = (k: Placeable['kind']): k is UpgradeableKind =>
+  (UPGRADEABLE as readonly string[]).includes(k);
+
+function levelsOf(state: SimState, kind: UpgradeableKind): Readonly<Record<string, number>> {
+  if (kind === 'node') return state.nodeLevel;
+  if (kind === 'storage') return state.storageLevel;
+  return state.conveyorLevel;
+}
+
+// tile 설비의 다음 레벨업 비용 (Node/Storage/컨베이어). Exporter 는 자동 레벨업이라 대상 아님.
+// 2026-09-17 확정: 1~5레벨(레벨업 전 기준)은 골드만(base×growth^(level-1)),
+//   6~10레벨은 재료 미정이라 예전 공식(골드 10×레벨 + 재료)을 임시로 유지.
 export function upgradeCost(state: SimState, tile: Tile): UpgradeCost | null {
   const p = placeableAt(state.placeables, tile);
-  if (!p || (p.kind !== 'node' && p.kind !== 'storage')) return null;
-  const level = (p.kind === 'node' ? state.nodeLevel : state.storageLevel)[p.id] ?? 1;
+  if (!p || !isUpgradeable(p.kind)) return null;
+  const level = levelsOf(state, p.kind)[p.id] ?? 1;
+  if (level <= 5) {
+    return {
+      gold: Math.round(CONFIG.upgradeCostBase * CONFIG.upgradeCostGrowth ** (level - 1)),
+      material: null,
+      materialQty: 0,
+    };
+  }
   return {
-    gold: CONFIG.upgradeCostBase * level,
+    gold: CONFIG.upgradeCostLegacyPerLevel * level,
     material: CONFIG.upgradeMaterial,
     materialQty: CONFIG.upgradeMaterialPerLevel * level,
   };
 }
 
-// 설비 업그레이드 — 골드 + Storage 에 쌓인 재료 소모, 레벨 +1
+// 설비 업그레이드 — 골드(+6레벨부턴 Storage 재료도) 소모, 레벨 +1. 최대레벨(maxLevel) 도달 시 거부.
 export function upgradePlaceable(state: SimState, tile: Tile): PlaceResult {
   const p = placeableAt(state.placeables, tile);
   if (!p) return '설치물이 없습니다';
   if (p.kind === 'exporter') return 'Exporter 는 자동 레벨업입니다';
-  if (p.kind !== 'node' && p.kind !== 'storage') return '업그레이드할 수 없는 설비입니다';
+  if (!isUpgradeable(p.kind)) return '업그레이드할 수 없는 설비입니다';
+
+  const levels = levelsOf(state, p.kind);
+  const level = levels[p.id] ?? 1;
+  if (level >= CONFIG.maxLevel) return '이미 최대 레벨입니다';
 
   const cost = upgradeCost(state, tile)!;
   if (state.gold < cost.gold) return `골드 부족 (필요 ${cost.gold}G)`;
-  const have = totalInStorage(state.storage, cost.material);
-  if (have < cost.materialQty) {
-    const name = RESOURCES[cost.material]?.name ?? cost.material;
-    return `${name} 부족 (필요 ${cost.materialQty}, 보유 ${have}) — Storage 에 모아야 함`;
+  let storage = state.storage;
+  if (cost.material) {
+    const have = totalInStorage(state.storage, cost.material);
+    if (have < cost.materialQty) {
+      const name = RESOURCES[cost.material]?.name ?? cost.material;
+      return `${name} 부족 (필요 ${cost.materialQty}, 보유 ${have}) — Storage 에 모아야 함`;
+    }
+    storage = withdrawFromStorage(state.storage, cost.material, cost.materialQty);
   }
 
-  const levels = p.kind === 'node' ? state.nodeLevel : state.storageLevel;
-  const nextLevels = { ...levels, [p.id]: (levels[p.id] ?? 1) + 1 };
-  const base: SimState = {
-    ...state,
-    gold: state.gold - cost.gold,
-    storage: withdrawFromStorage(state.storage, cost.material, cost.materialQty),
-  };
-  return p.kind === 'node'
-    ? { ...base, nodeLevel: nextLevels }
-    : { ...base, storageLevel: nextLevels };
+  const nextLevels = { ...levels, [p.id]: level + 1 };
+  const base: SimState = { ...state, gold: state.gold - cost.gold, storage };
+  if (p.kind === 'node') return { ...base, nodeLevel: nextLevels };
+  if (p.kind === 'storage') return { ...base, storageLevel: nextLevels };
+  return { ...base, conveyorLevel: nextLevels };
 }
 
-// 철거비 = 해당 설치물의 설치 비용과 동일 (Obsidian: "철거 비용은 설치 비용과 동일"). 임시 =10.
-function removalFee(kind: Placeable['kind']): number {
-  switch (kind) {
-    case 'conveyor':
-      return CONFIG.conveyorCost;
-    case 'converter':
-      return CONFIG.converterCost;
-    case 'storage':
-      return CONFIG.storageCost;
-    default:
-      return CONFIG.buildingCost;
-  }
+// 철거비 = 그 순간 설치비 × removalFeeRatio (2026-09-17 확정: 기존 100%→50%로 변경).
+// Node 는 설치비 자체가 동적(현재 보유 개수 기반)이라 "지금 다시 설치한다면" 가격 기준으로 계산.
+function removalFee(state: SimState, p: Placeable): number {
+  const installCost = (() => {
+    switch (p.kind) {
+      case 'conveyor':
+        return CONFIG.conveyorCost;
+      case 'converter':
+        return CONFIG.converterCost;
+      case 'storage':
+        return CONFIG.storageCost;
+      case 'exporter':
+        return CONFIG.exporterCost;
+      case 'node':
+        return nodeCost(state);
+    }
+  })();
+  return Math.round(installCost * CONFIG.removalFeeRatio);
 }
 
 export function removePlaceable(state: SimState, tile: Tile): PlaceResult {
   const p = placeableAt(state.placeables, tile);
   if (!p) return '설치물이 없습니다';
 
-  const fee = removalFee(p.kind);
+  const fee = removalFee(state, p);
   if (state.gold < fee) return `골드 부족 (철거비 ${fee}G)`;
 
   const placeables = state.placeables.filter((x) => x.id !== p.id);
@@ -781,6 +855,8 @@ export function removePlaceable(state: SimState, tile: Tile): PlaceResult {
   delete nodeLevel[p.id];
   const storageLevel = { ...state.storageLevel };
   delete storageLevel[p.id];
+  const conveyorLevel = { ...state.conveyorLevel };
+  delete conveyorLevel[p.id];
   const exporterLevel = { ...state.exporterLevel };
   delete exporterLevel[p.id];
   const exporterProgress = { ...state.exporterProgress };
@@ -797,8 +873,27 @@ export function removePlaceable(state: SimState, tile: Tile): PlaceResult {
     storage,
     nodeLevel,
     storageLevel,
+    conveyorLevel,
     exporterLevel,
     exporterProgress,
+  };
+}
+
+// ---- M7 진입 전 확정: 설치된 컨베이어/Node/Converter 방향을 무료로 제자리 수정 --------
+
+// 짧게 클릭=한 칸 회전, 길게 누르기=원하는 방향 직접 선택 — 둘 다 이 함수 하나로 처리(호출부에서 dir 결정).
+// 무료, 헤드온(마주보기 금지) 규칙은 새 설치와 동일하게 적용.
+export function rotatePlaceable(state: SimState, tile: Tile, dir: Dir): PlaceResult {
+  const p = placeableAt(state.placeables, tile);
+  if (!p) return '설치물이 없습니다';
+  if (p.kind !== 'node' && p.kind !== 'conveyor' && p.kind !== 'converter') {
+    return '방향이 없는 설비입니다';
+  }
+  if (p.dir === dir) return state;
+  if (facesHeadOn(state.placeables, tile, dir)) return HEAD_ON_MSG;
+  return {
+    ...state,
+    placeables: state.placeables.map((x) => (x.id === p.id ? { ...x, dir } : x)),
   };
 }
 

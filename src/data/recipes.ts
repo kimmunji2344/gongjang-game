@@ -1,17 +1,16 @@
 // Converter 가공 레시피 표. 하드코딩 금지 — 여기서만 관리.
-// M2 임시 플레이스홀더 (R1/R2). 사용자가 Obsidian 용어정리에 실제 레시피를 정리해 추가하면
-// 그때 교체한다 (2026-09-07 사용자 지시).
+// "공장 게임 확정 대기 목록" 1차 확정 반영 (2026-09-17). 캡슐·모듈 레시피는 자원 도감 완성 후 추가.
 
 export type RecipeDef = {
   readonly id: string;
   readonly inputs: readonly string[]; // 서로 다른 자원 2종 이상 (RESOURCES 키)
   readonly output: string;            // 산출 가공품 (RESOURCES 키)
-  readonly grade: number;             // 가공 1회 소요 속도 등급 (1~30). 임시 =10 → 1초
+  readonly grade: number;             // 가공 1회 소요 속도 등급 (1~30)
 };
 
 export const RECIPES: readonly RecipeDef[] = [
-  { id: 'R1', inputs: ['A1', 'A2'], output: 'B1', grade: 10 },
-  { id: 'R2', inputs: ['A1', 'B1'], output: 'C1', grade: 10 }, // 재귀 가공 예시 (B1 을 다시 입력)
+  { id: 'core', inputs: ['chip', 'debris'], output: 'core', grade: 20 },
+  { id: 'plate', inputs: ['chip', 'scrap'], output: 'plate', grade: 20 },
 ];
 
 // 현재 보유(백로그)한 자원 종류로 가동 가능한 레시피 1개.
