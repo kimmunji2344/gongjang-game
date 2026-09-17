@@ -1,0 +1,42 @@
+/* M7 — 인게임 HUD(상단바·사이드바·NPC뱃지). 팝업/토스트는 theme.css. */
+#gj-shell { display: flex; flex-direction: column; height: 100%; }
+#app { flex: 1 1 auto; min-height: 0; }
+
+#gj-topbar {
+  flex: 0 0 auto;
+  background: var(--paper);
+  border-bottom: 2px solid var(--line);
+  padding: 10px 14px 8px;
+  font-family: var(--font-body);
+}
+.gj-stats { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.gj-chip {
+  background: var(--surface); border-radius: 999px; padding: 5px 14px;
+  font-size: 13px; color: var(--ink); box-shadow: 0 2px 0 var(--line);
+}
+.gj-toolrow { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.gj-toolrow .gj-sep { width: 2px; align-self: stretch; background: var(--line); margin: 0 4px; }
+.gj-btn.small { padding: 6px 12px; font-size: 12px; }
+
+#gj-sidebar {
+  position: fixed; top: 96px; right: 14px; width: 232px; max-height: calc(100vh - 120px);
+  overflow-y: auto; background: var(--surface); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-soft); padding: 12px 14px; font-family: var(--font-body);
+  font-size: 12.5px; color: var(--ink); z-index: 5;
+}
+#gj-sidebar h4 { margin: 0 0 6px; font-family: var(--font-display); font-size: 13px; font-weight: normal; }
+.gj-srow { padding: 7px 8px; border-radius: var(--radius-sm); margin-bottom: 5px; background: var(--surface-alt); }
+.gj-srow.danger { background: var(--danger); }
+.gj-srow .vent-btn {
+  margin-top: 5px; width: 100%; border: none; border-radius: var(--radius-sm);
+  background: var(--surface); color: var(--ink); padding: 5px 0; font-family: var(--font-display);
+  font-size: 11px; cursor: pointer;
+}
+
+#gj-npc-badge {
+  position: fixed; left: 14px; bottom: 14px; background: var(--pink);
+  border-radius: 999px; padding: 10px 18px; box-shadow: var(--shadow-soft);
+  font-family: var(--font-body); font-size: 13px; color: var(--ink); cursor: pointer;
+  z-index: 5; border: 2px solid var(--pink-deep);
+}
+#gj-npc-badge:hover { transform: translateY(-1px); }

@@ -1,0 +1,105 @@
+/* M7 디자인 개편 — 공용 디자인 토큰 (동물의숲류 "몽글몽글" 감성: 흑백 베이스 + 파스텔 포인트) */
+@import url('https://fonts.googleapis.com/css2?family=Jua&family=Gowun+Dodum&display=swap');
+
+:root {
+  --ink: #4a4744;
+  --ink-soft: #948d82;
+  --paper: #f7f2e9;
+  --surface: #ffffff;
+  --surface-alt: #fbf8f2;
+  --line: #e8e0d0;
+
+  --mint: #bfe8d4;
+  --mint-deep: #7fcaa6;
+  --peach: #f7cbb0;
+  --peach-deep: #ec9c6e;
+  --lavender: #d9cdf0;
+  --lavender-deep: #b39fe0;
+  --butter: #f8e6a8;
+  --butter-deep: #e8c85a;
+  --sky: #bfe0f2;
+  --sky-deep: #7fbcdd;
+  --pink: #f6c9d6;
+  --pink-deep: #ec99b3;
+  --danger: #f6b3b3;
+  --danger-deep: #e17b7b;
+  --success: #bfe6bd;
+
+  --radius-lg: 22px;
+  --radius-md: 14px;
+  --radius-sm: 9px;
+  --shadow-soft: 0 10px 26px rgba(150, 130, 90, 0.16), 0 2px 6px rgba(150, 130, 90, 0.1);
+
+  --font-display: 'Jua', 'Malgun Gothic', sans-serif;
+  --font-body: 'Gowun Dodum', 'Malgun Gothic', sans-serif;
+}
+
+.gj-btn {
+  font-family: var(--font-display);
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--ink);
+  padding: 8px 16px;
+  font-size: 14px;
+  cursor: pointer;
+  box-shadow: 0 3px 0 var(--line);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.gj-btn:hover { transform: translateY(-1px); }
+.gj-btn:active { transform: translateY(1px); box-shadow: 0 1px 0 var(--line); }
+.gj-btn.on { background: var(--mint); box-shadow: 0 3px 0 var(--mint-deep); }
+.gj-btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+
+/* 팝업(모달) — 랭킹/도감/NPC/창고/설정/셧다운/방향선택 공통 */
+#gj-popup-root { font-family: var(--font-body); }
+.gj-backdrop {
+  position: fixed; inset: 0; background: rgba(74, 71, 68, 0.28);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 50; animation: gj-fade 0.15s ease;
+}
+.gj-popup {
+  background: var(--surface); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-soft); width: min(420px, 92vw);
+  max-height: 82vh; display: flex; flex-direction: column;
+  animation: gj-pop 0.18s cubic-bezier(0.2, 1.4, 0.4, 1);
+  overflow: hidden;
+}
+.gj-popup-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px; font-family: var(--font-display); font-size: 18px;
+  color: var(--ink); background: var(--accent, var(--sky));
+}
+.gj-popup-close {
+  border: none; background: rgba(255, 255, 255, 0.6); color: var(--ink);
+  width: 28px; height: 28px; border-radius: 50%; cursor: pointer; font-size: 14px;
+  display: flex; align-items: center; justify-content: center;
+}
+.gj-popup-body { padding: 16px 18px; overflow-y: auto; font-size: 14px; color: var(--ink); line-height: 1.6; }
+.gj-popup-body .row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px dashed var(--line); }
+.gj-popup-body .row:last-child { border-bottom: none; }
+.gj-popup-foot { padding: 12px 18px 18px; display: flex; gap: 8px; justify-content: flex-end; }
+.gj-tabs { display: flex; gap: 6px; padding: 0 18px; background: var(--surface-alt); }
+.gj-tabs button {
+  flex: 1; padding: 8px 0; border: none; background: none; color: var(--ink-soft);
+  font-family: var(--font-display); font-size: 13px; cursor: pointer; border-bottom: 3px solid transparent;
+}
+.gj-tabs button.on { color: var(--ink); border-bottom-color: var(--accent, var(--sky-deep)); }
+
+@keyframes gj-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes gj-pop { from { opacity: 0; transform: scale(0.9) translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* 토스트 — 배치/업그레이드 결과 등 즉각 피드백 (블로킹 없음) */
+#gj-toast-root {
+  position: fixed; top: 18px; left: 50%; transform: translateX(-50%);
+  z-index: 60; display: flex; flex-direction: column; gap: 8px; align-items: center;
+  pointer-events: none;
+}
+.gj-toast {
+  font-family: var(--font-body); background: var(--surface); color: var(--ink);
+  padding: 10px 18px; border-radius: 999px; box-shadow: var(--shadow-soft);
+  font-size: 13px; animation: gj-toast-in 0.2s cubic-bezier(0.2, 1.4, 0.4, 1);
+  border: 2px solid var(--mint);
+}
+.gj-toast.bad { border-color: var(--danger); }
+@keyframes gj-toast-in { from { opacity: 0; transform: translateY(-8px) scale(0.95); } to { opacity: 1; transform: none; } }

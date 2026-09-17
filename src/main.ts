@@ -1,3 +1,4 @@
+import './ui/theme.css';
 import { runPreGameFlow } from './ui/screens';
 import { startFactory } from './game';
 

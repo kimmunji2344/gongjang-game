@@ -12,7 +12,7 @@ export async function startFactory(userId: string, save: SimState | null): Promi
     parent: 'app',
     width: 800,
     height: 600,
-    backgroundColor: '#f2f2f2',
+    backgroundColor: '#f7f2e9',
     scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
   });
 

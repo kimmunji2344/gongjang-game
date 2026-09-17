@@ -1,11 +1,10 @@
-// M1~M3 렌더 + 입력. 그래픽은 전부 플레이스홀더 (M7에서 일괄 교체 예정).
+// M7 디자인 개편 — 렌더(캔버스: 격자·설비·화물)는 Phaser, HUD·팝업은 전부 DOM(src/ui/hud.ts, popup.ts).
+// 자원/가공품 개별 아이콘 디자인은 자원 도감 완성 후로 보류 — 지금은 설비/타일/UI만 교체.
 import Phaser from 'phaser';
-import { ACHIEVEMENTS } from '../data/achievements';
 import { CONFIG } from '../data/config';
 import { RESOURCES } from '../data/resources';
 import { gradeToTicks } from '../data/speed';
-import { TILE_PATTERNS } from '../data/tilePatterns';
-import { DIR_ARROW, DIR_VEC, Dir, Tile, placeableAt } from '../sim/grid';
+import { DIR_VEC, Dir, Tile, placeableAt } from '../sim/grid';
 import { currentDayId } from '../sim/day';
 import {
   HintId,
@@ -28,104 +27,83 @@ import {
   shutdownInfo,
   step,
   stoppedPlaceables,
-  storageCap,
-  storageTotal,
-  totalInStorage,
   upgradeCost,
   upgradePlaceable,
   ventConverter,
-  zoneCost,
 } from '../sim/sim';
-import { buyableZones, parseZone, zoneName, zoneOf, zoneTileBounds } from '../sim/zones';
+import { buyableZones, parseZone, zoneOf, zoneTileBounds } from '../sim/zones';
 import { putSave } from '../net/save';
-import { getHallOfFame, getSeasonRanking, HallOfFame, SeasonRanking } from '../net/rank';
-
-type Tool =
-  | 'zone'
-  | 'conveyor'
-  | 'node'
-  | 'exporter'
-  | 'converter'
-  | 'storage'
-  | 'upgrade'
-  | 'rotate'
-  | 'vent'
-  | 'remove';
+import { getHallOfFame, getSeasonRanking } from '../net/rank';
+import { logOut } from '../ui/screens';
+import { closePopup, showToast } from '../ui/popup';
+import {
+  Tool,
+  mountHud,
+  openCodexPopup,
+  openDirectionPopup,
+  openNpcPopup,
+  openRankLoadingPopup,
+  openRankPopup,
+  openSettingsPopup,
+  openShutdownPopup,
+  openStoragePopup,
+  openUpgradePopup,
+  setActiveTool,
+  updateNpcBadge,
+  updateSidebar,
+  updateToolInfo,
+  updateTopStats,
+} from '../ui/hud';
 
 const LONG_PRESS_MS = 500; // 2026-09-17 확정: 짧게 클릭=회전, 길게 누르면 방향 선택
-
-// 설치 전 회전 순서 (R 키). 상 → 우 → 하 → 좌 → 반복.
 const DIR_CYCLE: readonly Dir[] = ['N', 'E', 'S', 'W'];
 const nextDir = (d: Dir): Dir => DIR_CYCLE[(DIR_CYCLE.indexOf(d) + 1) % DIR_CYCLE.length];
-const DIRECTIONAL_TOOLS: ReadonlySet<Tool> = new Set<Tool>(['conveyor', 'node', 'converter']);
-
-const CELL = 44;
-const ORIGIN_X = 190;
-const ORIGIN_Y = 100;
-const VIEW_AREA = 452; // 격자를 그릴 정사각 영역 (px)
-const TICK_MS = 1000 / CONFIG.tickHz;
-const S = CONFIG.zone.size;
-
-const COLOR = {
-  gridLine: 0xcccccc,
-  zoneBg: 0xfafafa,
-  zoneBorder: 0x999999,
-  buyable: 0x2288cc,
-  node: 0x333333,
-  exporter: 0x888888,
-  converter: 0x8844aa,
-  storage: 0x22aa88,
-  conveyor: 0xdddddd,
-  conveyorActive: 0xf0c000,
-  cargo: 0x2266cc,
-  shutdown: 0xcc2222,
-} as const;
-
-const TOOLS: readonly Tool[] = [
+// 이미 설치된 타일 위에 이 도구들로 클릭하면 "설치 실패" 대신 안내 팝업을 띄운다.
+const PLACEMENT_TOOLS: ReadonlySet<Tool> = new Set<Tool>([
   'zone',
   'conveyor',
   'node',
   'exporter',
   'converter',
   'storage',
-  'upgrade',
-  'rotate',
-  'vent',
-  'remove',
-];
-const TOOL_LABEL: Record<Tool, string> = {
-  zone: '구역',
-  conveyor: '컨베이어',
-  node: 'Node',
-  exporter: 'Exporter',
-  converter: 'Converter',
-  storage: 'Storage',
-  upgrade: '업글',
-  rotate: '회전',
-  vent: '긴급배출',
-  remove: '철거',
-};
+]);
+const ROTATABLE = new Set(['node', 'conveyor', 'converter']);
+
+const CELL = 44;
+const ORIGIN_X = 190;
+const ORIGIN_Y = 20;
+const VIEW_AREA = 452;
+const TICK_MS = 1000 / CONFIG.tickHz;
+const S = CONFIG.zone.size;
+
+// 동물의숲류 파스텔 팔레트 (흑백 베이스 + 파스텔 포인트). 자원 아이콘 자체는 아직 플레이스홀더.
+const COLOR = {
+  ink: 0x4a4744,
+  gridLine: 0xe8e0d0,
+  zoneBg: 0xfbf8f2,
+  zoneBorder: 0xdcd2ba,
+  buyable: 0x7fbcdd,
+  node: 0x8fd1b3,
+  exporter: 0xf3ac82,
+  converter: 0xc3aeea,
+  storage: 0xecd066,
+  conveyor: 0xe4ddce,
+  conveyorActive: 0xf6d97c,
+  cargo: 0xec99b3,
+  shutdown: 0xe17b7b,
+} as const;
 
 type View = { minX: number; minY: number; cell: number; ox: number; oy: number };
 
 export class FactoryScene extends Phaser.Scene {
   private sim!: SimState;
-  private startSave: SimState | null = null; // 서버에서 불러온 세이브 (없으면 새 게임)
+  private startSave: SimState | null = null;
   private acc = 0;
   private tool: Tool = 'conveyor';
-  private dir: Dir = 'E'; // 설치할 컨베이어/Node/Converter의 방향 (R로 회전)
-  private nodeResIdx = 0; // Node 도구가 설치할 자원 인덱스 (N 키로 순환, unlockedResources 기준)
+  private dir: Dir = 'E';
+  private nodeResIdx = 0;
   private view: View = { minX: 0, minY: 0, cell: CELL, ox: ORIGIN_X, oy: ORIGIN_Y };
-
   private gfx!: Phaser.GameObjects.Graphics;
-  private hud!: Phaser.GameObjects.Text;
-  private statusText!: Phaser.GameObjects.Text;
-  private toast!: Phaser.GameObjects.Text;
-  private toolButtons: Phaser.GameObjects.Text[] = [];
-  private rankPanel!: Phaser.GameObjects.Text; // M5 랭킹/명예의전당 패널 (플레이스홀더 — M7 재디자인)
-  private npcText!: Phaser.GameObjects.Text; // M6 NPC 오늘의 요청 표시
-  private codexPanel!: Phaser.GameObjects.Text; // M6 도감(자원/업적/타일) 패널
-  private dirPicker: Phaser.GameObjects.Text[] = []; // 회전 도구 길게 누르기 — 4방향 선택 버튼
   private rotateDownAt: { tile: Tile; time: number } | null = null;
 
   constructor() {
@@ -140,86 +118,49 @@ export class FactoryScene extends Phaser.Scene {
     this.sim = this.startSave ?? initialState();
     this.gfx = this.add.graphics();
 
-    this.hud = this.add.text(16, 16, '', {
-      color: '#222',
-      fontSize: '15px',
-      fontFamily: 'monospace',
+    mountHud({
+      onTool: (t) => {
+        this.tool = t;
+        this.rotateDownAt = null;
+        setActiveTool(t);
+        if (t === 'converter') {
+          this.applyHint(
+            'converter',
+            true,
+            'Converter는 서로 다른 자원 2종 이상을 입력받아야 가공을 시작합니다',
+          );
+        }
+      },
+      onSave: () => void this.persist('manual'),
+      onRank: () => void this.openRank(),
+      onCodex: () => openCodexPopup(this.sim),
+      onNpc: () => openNpcPopup(this.sim, () => this.handInNpc()),
+      onSettings: () =>
+        openSettingsPopup(
+          () => {
+            logOut();
+            window.location.reload();
+          },
+          () => void this.persist('manual'),
+        ),
     });
+    setActiveTool(this.tool);
 
-    this.add.text(
-      16,
-      74,
-      '[Node]검정 [Exporter]회색 [Converter]보라 [Storage]청록 · R=설치전 회전 N=자원 · ' +
-        '업글=Node/Storage/컨베이어 클릭 · 회전 도구=놓인 설비 클릭(짧게=회전/길게=방향선택) · Exporter는 자동레벨',
-      { color: '#555', fontSize: '10px' },
-    );
-
-    this.statusText = this.add.text(652, 100, '', {
-      color: '#333',
-      fontSize: '11px',
-      fontFamily: 'monospace',
-      wordWrap: { width: 144 },
-    });
-
-    this.toast = this.add
-      .text(400, 566, '', { color: '#c00', fontSize: '14px' })
-      .setOrigin(0.5);
-
-    this.npcText = this.add.text(16, 90, '', { color: '#555', fontSize: '11px' });
-
-    // M6 튜토리얼 힌트 1/3 — 게임 시작 시 1회 (Obsidian 스펙 예시 그대로)
     this.applyHint('start', true, '이 둘을 이어보세요! (Node → Exporter, 컨베이어로 연결)');
 
-    TOOLS.forEach((t, i) => {
-      const btn = this.add
-        .text(14 + i * 82, 44, TOOL_LABEL[t], {
-          color: '#111',
-          backgroundColor: '#e6e6e6',
-          padding: { x: 4, y: 4 },
-          fontSize: '11px',
-        })
-        .setInteractive({ useHandCursor: true })
-        .on('pointerdown', (
-          _p: Phaser.Input.Pointer,
-          _x: number,
-          _y: number,
-          ev: Phaser.Types.Input.EventData,
-        ) => {
-          ev.stopPropagation();
-          this.closeDirectionPicker();
-          this.rotateDownAt = null;
-          this.tool = t;
-          this.refreshToolButtons();
-          // M6 튜토리얼 힌트 2/3 — 첫 Converter 도구 선택 시 1회
-          if (t === 'converter') {
-            this.applyHint(
-              'converter',
-              true,
-              'Converter는 서로 다른 자원 2종 이상을 입력받아야 가공을 시작합니다',
-            );
-          }
-        });
-      this.toolButtons.push(btn);
-    });
-    this.refreshToolButtons();
-
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-      if (this.dirPicker.length > 0) {
-        this.closeDirectionPicker(); // 바깥 클릭 = 취소만
-        return;
-      }
       if (this.tool === 'rotate') {
         this.rotateDownAt = { tile: this.tileFromPointer(pointer), time: this.time.now };
         return;
       }
       this.onGridClick(pointer);
     });
-    this.input.on('pointerup', (_pointer: Phaser.Input.Pointer) => {
+    this.input.on('pointerup', () => {
       if (this.tool !== 'rotate' || !this.rotateDownAt) return;
       const { tile, time } = this.rotateDownAt;
       this.rotateDownAt = null;
       if (this.time.now - time >= LONG_PRESS_MS) {
-        this.openDirectionPicker(tile);
+        this.startDirectionPick(tile);
       } else {
         this.rotateOneStep(tile);
       }
@@ -232,151 +173,6 @@ export class FactoryScene extends Phaser.Scene {
       this.nodeResIdx = (this.nodeResIdx + 1) % n;
     });
 
-    // 수동 저장 버튼 (플레이스홀더 — M7 재디자인)
-    this.add
-      .text(700, 16, '저장', {
-        color: '#111',
-        backgroundColor: '#cfe8cf',
-        padding: { x: 10, y: 5 },
-        fontSize: '13px',
-      })
-      .setInteractive({ useHandCursor: true })
-      .on(
-        'pointerdown',
-        (
-          _p: Phaser.Input.Pointer,
-          _x: number,
-          _y: number,
-          ev: Phaser.Types.Input.EventData,
-        ) => {
-          ev.stopPropagation();
-          void this.persist('manual');
-        },
-      );
-
-    // 랭킹 버튼 + 패널 (플레이스홀더 — M7 재디자인). 클릭 시 열고/닫기 토글.
-    this.add
-      .text(700, 50, '랭킹', {
-        color: '#111',
-        backgroundColor: '#cfe0f0',
-        padding: { x: 10, y: 5 },
-        fontSize: '13px',
-      })
-      .setInteractive({ useHandCursor: true })
-      .on(
-        'pointerdown',
-        (
-          _p: Phaser.Input.Pointer,
-          _x: number,
-          _y: number,
-          ev: Phaser.Types.Input.EventData,
-        ) => {
-          ev.stopPropagation();
-          void this.toggleRankPanel();
-        },
-      );
-
-    this.rankPanel = this.add
-      .text(190, 100, '', {
-        color: '#111',
-        backgroundColor: '#ffffff',
-        padding: { x: 10, y: 10 },
-        fontSize: '12px',
-        fontFamily: 'monospace',
-        wordWrap: { width: 452 },
-      })
-      .setDepth(10)
-      .setVisible(false)
-      .setInteractive({ useHandCursor: true })
-      .on(
-        'pointerdown',
-        (
-          _p: Phaser.Input.Pointer,
-          _x: number,
-          _y: number,
-          ev: Phaser.Types.Input.EventData,
-        ) => {
-          ev.stopPropagation();
-          this.rankPanel.setVisible(false);
-        },
-      );
-
-    // M6 NPC 건네기 버튼 (플레이스홀더 — M7 재디자인)
-    this.add
-      .text(700, 84, 'NPC건네기', {
-        color: '#111',
-        backgroundColor: '#f0d8c0',
-        padding: { x: 10, y: 5 },
-        fontSize: '13px',
-      })
-      .setInteractive({ useHandCursor: true })
-      .on(
-        'pointerdown',
-        (
-          _p: Phaser.Input.Pointer,
-          _x: number,
-          _y: number,
-          ev: Phaser.Types.Input.EventData,
-        ) => {
-          ev.stopPropagation();
-          const r = fulfillNpcQuest(this.sim);
-          if (typeof r === 'string') {
-            this.toast.setText(r);
-          } else {
-            this.sim = r;
-            this.toast.setText('NPC 퀘스트 완료! 보상 지급됨');
-          }
-        },
-      );
-
-    // M6 도감 버튼 + 패널 (플레이스홀더 — M7 재디자인). 랭킹 패널과 상호 배타.
-    this.add
-      .text(700, 118, '도감', {
-        color: '#111',
-        backgroundColor: '#e0d0f0',
-        padding: { x: 10, y: 5 },
-        fontSize: '13px',
-      })
-      .setInteractive({ useHandCursor: true })
-      .on(
-        'pointerdown',
-        (
-          _p: Phaser.Input.Pointer,
-          _x: number,
-          _y: number,
-          ev: Phaser.Types.Input.EventData,
-        ) => {
-          ev.stopPropagation();
-          this.toggleCodexPanel();
-        },
-      );
-
-    this.codexPanel = this.add
-      .text(190, 100, '', {
-        color: '#111',
-        backgroundColor: '#ffffff',
-        padding: { x: 10, y: 10 },
-        fontSize: '12px',
-        fontFamily: 'monospace',
-        wordWrap: { width: 452 },
-      })
-      .setDepth(10)
-      .setVisible(false)
-      .setInteractive({ useHandCursor: true })
-      .on(
-        'pointerdown',
-        (
-          _p: Phaser.Input.Pointer,
-          _x: number,
-          _y: number,
-          ev: Phaser.Types.Input.EventData,
-        ) => {
-          ev.stopPropagation();
-          this.codexPanel.setVisible(false);
-        },
-      );
-
-    // 자동 저장 (Code.md 확정: 30초 주기)
     this.time.addEvent({
       delay: CONFIG.autosaveMs,
       loop: true,
@@ -388,92 +184,33 @@ export class FactoryScene extends Phaser.Scene {
 
   private async persist(kind: 'auto' | 'manual'): Promise<void> {
     const ok = await putSave(this.sim);
-    if (kind === 'manual') {
-      this.toast.setText(ok ? '저장됨' : '저장 실패 — 잠시 후 다시 시도');
-    } else if (!ok) {
-      this.toast.setText('자동저장 실패');
-    }
+    if (kind === 'manual') showToast(ok ? '저장됨' : '저장 실패 — 잠시 후 다시 시도', ok ? 'ok' : 'bad');
+    else if (!ok) showToast('자동저장 실패', 'bad');
   }
 
-  private async toggleRankPanel(): Promise<void> {
-    if (this.rankPanel.visible) {
-      this.rankPanel.setVisible(false);
-      return;
-    }
-    this.codexPanel.setVisible(false); // 도감 패널과 상호 배타
-    this.rankPanel.setText('불러오는 중...');
-    this.rankPanel.setVisible(true);
+  private async openRank(): Promise<void> {
+    openRankLoadingPopup();
     const [season, hof] = await Promise.all([getSeasonRanking(), getHallOfFame()]);
-    if (!this.rankPanel.visible) return; // 응답 오는 동안 닫혔으면 무시
-    this.rankPanel.setText(this.formatRankPanel(season, hof));
+    openRankPopup(season, hof);
   }
 
-  private toggleCodexPanel(): void {
-    if (this.codexPanel.visible) {
-      this.codexPanel.setVisible(false);
-      return;
+  private handInNpc(): void {
+    const r = fulfillNpcQuest(this.sim);
+    if (typeof r === 'string') showToast(r, 'bad');
+    else {
+      this.sim = r;
+      showToast('NPC 퀘스트 완료! 보상 지급됨');
     }
-    this.rankPanel.setVisible(false); // 랭킹 패널과 상호 배타
-    this.codexPanel.setText(this.formatCodexPanel());
-    this.codexPanel.setVisible(true);
   }
 
-  private formatCodexPanel(): string {
-    const s = this.sim;
-    const lines: string[] = ['[도감] (클릭하면 닫힘)', '', '자원 도감:'];
-    lines.push(
-      s.codexResources.length
-        ? s.codexResources.map((r) => RESOURCES[r]?.name ?? r).join(', ')
-        : '아직 없음',
-    );
-
-    lines.push('', '업적 도감:');
-    for (const a of ACHIEVEMENTS) {
-      lines.push(`${s.codexAchievements.includes(a.id) ? '✓' : '✗'} ${a.name}`);
+  private doVent(tile: Tile): void {
+    const r = ventConverter(this.sim, tile);
+    if (typeof r === 'string') showToast(r, 'bad');
+    else {
+      this.sim = r;
+      showToast('긴급배출 완료');
+      closePopup();
     }
-
-    lines.push('', '타일 도감 (히든):');
-    const found = TILE_PATTERNS.filter((p) => s.codexTilePatterns.includes(p.id));
-    lines.push(found.length ? found.map((p) => p.name).join(', ') : '아직 발견 없음');
-
-    return lines.join('\n');
-  }
-
-  // trigger 조건이 활성이고 아직 안 본 힌트면 토스트로 표시 + hintsSeen 에 영구 등록
-  private applyHint(id: HintId, active: boolean, text: string): void {
-    const [next, shown] = checkHint(this.sim, id, active);
-    this.sim = next;
-    if (shown) this.toast.setText(text);
-  }
-
-  private formatRankPanel(season: SeasonRanking | null, hof: HallOfFame | null): string {
-    const lines: string[] = [`[시즌 랭킹 ${season?.season ?? ''}] (클릭하면 닫힘)`];
-    if (!season || season.entries.length === 0) {
-      lines.push('기록 없음');
-    } else {
-      for (const e of season.entries) {
-        lines.push(`${e.rank}위 ${e.userId}  수익 ${e.seasonRevenue}G  WAR ${e.war.toFixed(1)}`);
-      }
-    }
-    lines.push('', '[명예의 전당]');
-    const seasons = hof?.seasons ?? [];
-    if (seasons.length === 0) {
-      lines.push('지난 시즌 없음');
-    } else {
-      for (const s of seasons) {
-        lines.push(s.seasonId);
-        for (const e of s.entries.slice(0, 3)) {
-          lines.push(`  ${e.rank}위 ${e.userId}  수익 ${e.seasonRevenue}G`);
-        }
-      }
-    }
-    return lines.join('\n');
-  }
-
-  private refreshToolButtons(): void {
-    this.toolButtons.forEach((b, i) => {
-      b.setBackgroundColor(TOOLS[i] === this.tool ? '#f0c000' : '#e6e6e6');
-    });
   }
 
   // 소유 구역(+ 구역 도구일 때 구매 가능 구역)을 화면 영역에 맞춰 셀 크기·원점 계산
@@ -510,6 +247,27 @@ export class FactoryScene extends Phaser.Scene {
 
   private onGridClick(pointer: Phaser.Input.Pointer): void {
     const tile = this.tileFromPointer(pointer);
+    const existing = placeableAt(this.sim.placeables, tile);
+
+    // 이미 설치된 타일을 배치 도구로 클릭 = 배치 실패 토스트 대신 안내 팝업 (창고/셧다운 상세)
+    if (existing && PLACEMENT_TOOLS.has(this.tool)) {
+      if (existing.kind === 'storage') {
+        openStoragePopup(this.sim, existing.id);
+        return;
+      }
+      if (existing.kind === 'converter') {
+        const info = shutdownInfo(this.sim)[existing.id];
+        if (info) {
+          openShutdownPopup(info, () => this.doVent(tile));
+          return;
+        }
+      }
+    }
+
+    if (this.tool === 'upgrade') {
+      this.openUpgrade(tile);
+      return;
+    }
 
     let result: PlaceResult;
     switch (this.tool) {
@@ -531,9 +289,6 @@ export class FactoryScene extends Phaser.Scene {
       case 'storage':
         result = placeStorage(this.sim, tile);
         break;
-      case 'upgrade':
-        result = upgradePlaceable(this.sim, tile);
-        break;
       case 'vent':
         result = ventConverter(this.sim, tile);
         break;
@@ -541,92 +296,69 @@ export class FactoryScene extends Phaser.Scene {
         result = removePlaceable(this.sim, tile);
         break;
       case 'rotate':
-        // 회전 도구는 pointerdown/up 에서 길이를 재서 별도 처리 — 여기로는 오지 않음(안전망)
-        result = '놓인 설비를 클릭하세요';
-        break;
+        return; // pointerdown/up 에서 길이를 재서 별도 처리 — 여기로는 오지 않음(안전망)
     }
 
-    if (typeof result === 'string') {
-      this.toast.setText(result);
-    } else {
-      const before = this.sim;
+    if (typeof result === 'string') showToast(result, 'bad');
+    else {
       this.sim = result;
-      if (this.tool === 'upgrade') {
-        const c = upgradeCost(before, tile);
-        const matPart = c?.material ? ` −${RESOURCES[c.material]?.name ?? c.material}${c.materialQty}` : '';
-        this.toast.setText(c ? `업그레이드 (−${c.gold}G${matPart})` : '업그레이드됨');
-      } else {
-        this.toast.setText('');
-      }
+      showToast('');
     }
+  }
+
+  private openUpgrade(tile: Tile): void {
+    const p = placeableAt(this.sim.placeables, tile);
+    if (!p) {
+      showToast('설치물이 없습니다', 'bad');
+      return;
+    }
+    if (p.kind === 'exporter') {
+      showToast('Exporter 는 자동 레벨업입니다', 'bad');
+      return;
+    }
+    const level =
+      p.kind === 'node'
+        ? this.sim.nodeLevel[p.id] ?? 1
+        : p.kind === 'storage'
+          ? this.sim.storageLevel[p.id] ?? 1
+          : this.sim.conveyorLevel[p.id] ?? 1;
+    const kindLabel = p.kind === 'node' ? 'Node' : p.kind === 'storage' ? 'Storage' : '컨베이어';
+    const cost = level >= CONFIG.maxLevel ? null : upgradeCost(this.sim, tile);
+    openUpgradePopup(kindLabel, level, cost, () => {
+      const result = upgradePlaceable(this.sim, tile);
+      if (typeof result === 'string') showToast(result, 'bad');
+      else {
+        this.sim = result;
+        showToast('업그레이드 완료!');
+      }
+    });
   }
 
   private applyRotate(tile: Tile, dir: Dir): void {
     const result = rotatePlaceable(this.sim, tile, dir);
-    if (typeof result === 'string') {
-      this.toast.setText(result);
-      return;
+    if (typeof result === 'string') showToast(result, 'bad');
+    else {
+      this.sim = result;
+      showToast('');
     }
-    this.sim = result;
-    this.toast.setText('');
   }
 
   private rotateOneStep(tile: Tile): void {
     const p = placeableAt(this.sim.placeables, tile);
-    if (!p || (p.kind !== 'node' && p.kind !== 'conveyor' && p.kind !== 'converter')) {
-      this.toast.setText('방향이 없는 설비입니다');
+    if (!p || !ROTATABLE.has(p.kind)) {
+      showToast('방향이 없는 설비입니다', 'bad');
       return;
     }
-    this.applyRotate(tile, nextDir(p.dir));
+    this.applyRotate(tile, nextDir((p as { dir: Dir }).dir));
   }
 
-  // 길게 누르기 — 타일 주변에 N/E/S/W 4방향 버튼을 띄워 원하는 방향을 바로 선택
-  private openDirectionPicker(tile: Tile): void {
+  private startDirectionPick(tile: Tile): void {
     const p = placeableAt(this.sim.placeables, tile);
-    if (!p || (p.kind !== 'node' && p.kind !== 'conveyor' && p.kind !== 'converter')) {
-      this.toast.setText('방향이 없는 설비입니다');
+    if (!p || !ROTATABLE.has(p.kind)) {
+      showToast('방향이 없는 설비입니다', 'bad');
       return;
     }
-    this.closeDirectionPicker();
-    const c = this.center(tile);
-    const offset: Record<Dir, readonly [number, number]> = {
-      N: [0, -24],
-      E: [24, 0],
-      S: [0, 24],
-      W: [-24, 0],
-    };
-    (['N', 'E', 'S', 'W'] as const).forEach((d) => {
-      const [dx, dy] = offset[d];
-      const btn = this.add
-        .text(c.x + dx, c.y + dy, DIR_ARROW[d], {
-          color: '#fff',
-          backgroundColor: '#2288cc',
-          padding: { x: 5, y: 2 },
-          fontSize: '13px',
-        })
-        .setOrigin(0.5)
-        .setDepth(20)
-        .setInteractive({ useHandCursor: true })
-        .on(
-          'pointerdown',
-          (
-            _p: Phaser.Input.Pointer,
-            _x: number,
-            _y: number,
-            ev: Phaser.Types.Input.EventData,
-          ) => {
-            ev.stopPropagation();
-            this.applyRotate(tile, d);
-            this.closeDirectionPicker();
-          },
-        );
-      this.dirPicker.push(btn);
-    });
-  }
-
-  private closeDirectionPicker(): void {
-    this.dirPicker.forEach((b) => b.destroy());
-    this.dirPicker = [];
+    openDirectionPopup((dir) => this.applyRotate(tile, dir));
   }
 
   update(_time: number, delta: number): void {
@@ -639,7 +371,6 @@ export class FactoryScene extends Phaser.Scene {
       this.acc -= TICK_MS;
     }
 
-    // M6 튜토리얼 힌트 3/3 — 첫 셧다운 발생 시 1회
     this.applyHint(
       'shutdown',
       Object.keys(shutdownInfo(this.sim)).length > 0,
@@ -657,14 +388,13 @@ export class FactoryScene extends Phaser.Scene {
     };
   }
 
-  // 타일 중앙에 진행 방향을 가리키는 작은 삼각형
-  private drawDirTriangle(cx: number, cy: number, d: Dir, color: number, size: number): void {
+  private drawDirTriangle(cx: number, cy: number, d: Dir, size: number): void {
     const [dx, dy] = DIR_VEC[d];
     const h = size;
     const tip = { x: cx + dx * h, y: cy + dy * h };
     const back = { x: cx - dx * h, y: cy - dy * h };
     const perp = { x: -dy * h, y: dx * h };
-    this.gfx.fillStyle(color, 1);
+    this.gfx.fillStyle(COLOR.ink, 0.75);
     this.gfx.fillTriangle(
       tip.x,
       tip.y,
@@ -686,23 +416,29 @@ export class FactoryScene extends Phaser.Scene {
       const y0 = c.y - v.cell / 2;
       const w = S * v.cell;
       g.fillStyle(COLOR.zoneBg, 1);
-      g.fillRect(x0, y0, w, w);
+      g.fillRoundedRect(x0, y0, w, w, Math.min(14, v.cell * 0.3));
       g.lineStyle(1, COLOR.gridLine, 1);
-      for (let i = 0; i <= S; i++) {
+      for (let i = 1; i < S; i++) {
         g.lineBetween(x0 + i * v.cell, y0, x0 + i * v.cell, y0 + w);
         g.lineBetween(x0, y0 + i * v.cell, x0 + w, y0 + i * v.cell);
       }
       g.lineStyle(2, COLOR.zoneBorder, 1);
-      g.strokeRect(x0, y0, w, w);
+      g.strokeRoundedRect(x0, y0, w, w, Math.min(14, v.cell * 0.3));
     }
 
     if (this.tool === 'zone') {
-      g.lineStyle(2, COLOR.buyable, 1);
+      g.lineStyle(3, COLOR.buyable, 1);
       for (const zid of buyableZones(this.sim.ownedZones)) {
         const [bx, by] = zoneTileBounds(zid);
         const c = this.center([bx, by]);
         const w = S * v.cell;
-        g.strokeRect(c.x - v.cell / 2 + 3, c.y - v.cell / 2 + 3, w - 6, w - 6);
+        g.strokeRoundedRect(
+          c.x - v.cell / 2 + 3,
+          c.y - v.cell / 2 + 3,
+          w - 6,
+          w - 6,
+          Math.min(12, v.cell * 0.28),
+        );
       }
     }
   }
@@ -713,11 +449,11 @@ export class FactoryScene extends Phaser.Scene {
     this.computeView();
     const v = this.view;
     const tri = Math.max(4, v.cell * 0.16);
-    const inset = Math.max(1, v.cell * 0.08);
+    const inset = Math.max(1, v.cell * 0.1);
+    const radius = Math.min(10, v.cell * 0.26);
 
     this.drawZoneGrid();
 
-    // 가동 중인(막히지 않은) 경로의 컨베이어 타일 집합
     const routes = computeRoutes(this.sim.placeables);
     const activeTiles = new Set<string>();
     for (const route of routes.values()) {
@@ -734,26 +470,26 @@ export class FactoryScene extends Phaser.Scene {
       if (p.kind === 'conveyor') {
         const on = activeTiles.has(`${p.tile[0]},${p.tile[1]}`) && !stopped.has(p.id);
         g.fillStyle(on ? COLOR.conveyorActive : COLOR.conveyor, 1);
-        g.fillRect(c.x - box / 2, c.y - box / 2, box, box);
-        this.drawDirTriangle(c.x, c.y, p.dir, 0x222222, tri);
+        g.fillRoundedRect(c.x - box / 2, c.y - box / 2, box, box, radius);
+        this.drawDirTriangle(c.x, c.y, p.dir, tri);
       } else if (p.kind === 'node') {
         g.fillStyle(stopped.has(p.id) ? COLOR.shutdown : COLOR.node, 1);
-        g.fillRect(c.x - box / 2, c.y - box / 2, box, box);
-        this.drawDirTriangle(c.x, c.y, p.dir, 0xffffff, tri);
+        g.fillRoundedRect(c.x - box / 2, c.y - box / 2, box, box, radius);
+        this.drawDirTriangle(c.x, c.y, p.dir, tri);
       } else if (p.kind === 'converter') {
         g.fillStyle(COLOR.converter, 1);
-        g.fillRect(c.x - box / 2, c.y - box / 2, box, box);
-        this.drawDirTriangle(c.x, c.y, p.dir, 0xffffff, tri);
+        g.fillRoundedRect(c.x - box / 2, c.y - box / 2, box, box, radius);
+        this.drawDirTriangle(c.x, c.y, p.dir, tri);
         if (shut[p.id]) {
           g.lineStyle(3, COLOR.shutdown, 1);
-          g.strokeRect(c.x - v.cell / 2 + 1, c.y - v.cell / 2 + 1, v.cell - 2, v.cell - 2);
+          g.strokeRoundedRect(c.x - v.cell / 2 + 1, c.y - v.cell / 2 + 1, v.cell - 2, v.cell - 2, radius);
         }
       } else if (p.kind === 'storage') {
         g.fillStyle(COLOR.storage, 1);
-        g.fillRect(c.x - box / 2, c.y - box / 2, box, box);
+        g.fillRoundedRect(c.x - box / 2, c.y - box / 2, box, box, radius);
       } else {
         g.fillStyle(COLOR.exporter, 1);
-        g.fillRect(c.x - box / 2, c.y - box / 2, box, box);
+        g.fillRoundedRect(c.x - box / 2, c.y - box / 2, box, box, radius);
       }
     }
 
@@ -767,7 +503,6 @@ export class FactoryScene extends Phaser.Scene {
       const to = path[cargo.index];
       const a = this.center(from);
       const b = this.center(to);
-      // 2026-09-17 확정: 컨베이어도 레벨업 가능 — 그 칸의 실제 컨베이어 등급으로 애니메이션 속도 계산
       const tileConveyor = placeableAt(this.sim.placeables, to);
       const level = tileConveyor ? this.sim.conveyorLevel[tileConveyor.id] ?? 1 : 1;
       const perTile = gradeToTicks(conveyorGrade(level), CONFIG.tickHz);
@@ -775,84 +510,15 @@ export class FactoryScene extends Phaser.Scene {
       g.fillCircle(a.x + (b.x - a.x) * k, a.y + (b.y - a.y) * k, Math.max(2, v.cell * 0.11));
     }
 
-    this.drawStatusText(shut);
-    this.drawNpc();
-
-    const dirHint = DIRECTIONAL_TOOLS.has(this.tool) ? `  방향 [${DIR_ARROW[this.dir]}]` : '';
-    const nodeHint = this.tool === 'node' ? `  자원 [${this.nodeResource()}]` : '';
-    const locked = !this.sim.unlockedResources.includes('scrap');
-    const unlockHint = locked
-      ? `  칩판매 ${this.sim.chipSold}/${CONFIG.resourceUnlockChips}`
-      : '';
-    this.hud.setText(
-      `골드 ${this.sim.gold}G   구역 ${this.sim.ownedZones.length}개${unlockHint}   도구 [${this.tool}]${dirHint}${nodeHint}`,
-    );
+    updateTopStats(this.sim);
+    updateToolInfo(this.tool, this.dir, RESOURCES[this.nodeResource()]?.name ?? null);
+    updateSidebar(this.sim, shut, (tile) => this.doVent(tile));
+    updateNpcBadge(this.sim, () => openNpcPopup(this.sim, () => this.handInNpc()));
   }
 
-  // 오늘의 NPC 요청 표시 (플레이스홀더 텍스트, M7 재디자인)
-  private drawNpc(): void {
-    const npc = this.sim.npc;
-    if (!npc) {
-      this.npcText.setText('[NPC] 오늘 요청 없음');
-      return;
-    }
-    if (npc.done) {
-      this.npcText.setText('[NPC] 오늘 요청 완료! 내일 또 방문합니다');
-      return;
-    }
-    const name = RESOURCES[npc.resource]?.name ?? npc.resource;
-    const have = totalInStorage(this.sim.storage, npc.resource);
-    this.npcText.setText(`[NPC] ${name} x${npc.qty} 요청 (보유 ${have}/${npc.qty}) — NPC건네기 버튼`);
-  }
-
-  // 우측 상태판 (플레이스홀더 텍스트, M7 재디자인)
-  private drawStatusText(shut: Record<string, { resources: string[]; weight: number }>): void {
-    const s = this.sim;
-    const lines: string[] = [];
-
-    if (this.tool === 'zone') {
-      const buyable = buyableZones(s.ownedZones);
-      lines.push(`[구역] 다음 확장 ${zoneCost(s)}G`);
-      lines.push(buyable.length ? `구매가능: ${buyable.map(zoneName).join(' ')}` : '더 살 구역 없음');
-      lines.push('');
-    }
-
-    for (const p of s.placeables) {
-      if (p.kind === 'node') {
-        const lv = s.nodeLevel[p.id] ?? 1;
-        lines.push(`[N] ${p.id} Lv${lv} (${RESOURCES[p.resource]?.name ?? p.resource})`);
-      } else if (p.kind === 'converter') {
-        const bl = s.converterBacklog[p.id] ?? {};
-        const parts = Object.entries(bl).map(([r, n]) => `${RESOURCES[r]?.name ?? r}x${n}`);
-        const sd = shut[p.id];
-        lines.push(
-          `[C] ${p.id}\n  재고 ${parts.length ? parts.join(' ') : '없음'}` +
-            (sd
-              ? `\n  * 셧다운 (${sd.resources
-                  .map((r) => RESOURCES[r]?.name ?? r)
-                  .join(',')} 과잉, 무게 ${sd.weight})`
-              : ''),
-        );
-      } else if (p.kind === 'storage') {
-        const lv = s.storageLevel[p.id] ?? 1;
-        const contents = Object.entries(s.storage[p.id] ?? {})
-          .filter(([, n]) => n > 0)
-          .map(([r, n]) => `${RESOURCES[r]?.name ?? r}x${n}`)
-          .join(' ');
-        lines.push(
-          `[S] ${p.id} Lv${lv}\n  ${storageTotal(s, p.id)}/${storageCap(lv)}${contents ? ' · ' + contents : ''}`,
-        );
-      } else if (p.kind === 'exporter') {
-        const lv = s.exporterLevel[p.id] ?? 1;
-        const prog = s.exporterProgress[p.id] ?? 0;
-        const pct = Math.round(lv * CONFIG.exporterRevenuePctPerLevel * 100);
-        const next = lv < CONFIG.maxLevel ? `${prog}/${CONFIG.exporterLevelThresholds[lv - 1]}` : '최대';
-        lines.push(`[E] ${p.id} Lv${lv} (+${pct}%, ${next})`);
-      } else if (p.kind === 'conveyor') {
-        const lv = s.conveyorLevel[p.id] ?? 1;
-        if (lv > 1) lines.push(`[V] ${p.id} Lv${lv}`);
-      }
-    }
-    this.statusText.setText(lines.join('\n'));
+  private applyHint(id: HintId, active: boolean, text: string): void {
+    const [next, shown] = checkHint(this.sim, id, active);
+    this.sim = next;
+    if (shown) showToast(text);
   }
 }

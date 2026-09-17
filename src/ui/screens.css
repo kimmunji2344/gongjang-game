@@ -1,51 +1,71 @@
-/* M0 화면 스타일 — 전부 플레이스홀더 (M7에서 교체) */
+/* M7 — 로그인/메뉴/로딩 화면. 동물의숲류 몽글몽글 감성(흑백 베이스 + 파스텔 포인트) */
 #ui {
   position: fixed;
   inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-family: system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif;
+  font-family: var(--font-body);
   z-index: 10;
-  background: #14161c;
+  background: var(--paper);
 }
 #ui[hidden] { display: none; }
-#ui.menu-bg { background: radial-gradient(circle at 50% 38%, #2b3040, #14161c); }
-#ui.dim { background: rgba(0, 0, 0, 0.55); }
+#ui.menu-bg {
+  background:
+    radial-gradient(circle at 20% 20%, var(--mint) 0%, transparent 40%),
+    radial-gradient(circle at 85% 15%, var(--pink) 0%, transparent 38%),
+    radial-gradient(circle at 80% 85%, var(--sky) 0%, transparent 40%),
+    var(--paper);
+}
+#ui.dim { background: rgba(74, 71, 68, 0.32); }
 
 #ui .screen { display: none; flex-direction: column; align-items: center; }
 #ui .screen.active { display: flex; }
 
-#ui-menu { gap: 40px; }
-#ui-menu h1 { color: #fff; font-size: 44px; letter-spacing: 10px; margin: 0; }
-#ui-menu button {
-  font-size: 22px; padding: 14px 64px; border: 0; border-radius: 8px;
-  background: #e6e6e6; color: #111; cursor: pointer;
+#ui-menu { gap: 36px; }
+#ui-menu h1 {
+  color: var(--ink); font-family: var(--font-display); font-size: 48px;
+  letter-spacing: 6px; margin: 0; text-shadow: 3px 3px 0 var(--surface);
 }
-#ui-menu button:hover { background: #fff; }
+#ui-menu button {
+  font-family: var(--font-display); font-size: 22px; padding: 16px 68px; border: none;
+  border-radius: var(--radius-lg); background: var(--surface); color: var(--ink);
+  cursor: pointer; box-shadow: 0 5px 0 var(--line);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+#ui-menu button:hover { transform: translateY(-2px); }
+#ui-menu button:active { transform: translateY(3px); box-shadow: 0 2px 0 var(--line); }
 
-.card { background: #1e2128; border-radius: 12px; padding: 26px 30px; width: 300px; color: #e8e8e8; }
+.card {
+  background: var(--surface); border-radius: var(--radius-lg); padding: 28px 30px;
+  width: 300px; color: var(--ink); box-shadow: var(--shadow-soft);
+}
 .card .tabs { display: flex; gap: 8px; margin-bottom: 16px; }
 .card .tabs button {
-  flex: 1; padding: 8px 0; border: 0; border-radius: 6px; cursor: pointer;
-  background: #2b2f39; color: #9aa0ab; font-size: 14px;
+  flex: 1; padding: 8px 0; border: 0; border-radius: var(--radius-sm); cursor: pointer;
+  background: var(--surface-alt); color: var(--ink-soft); font-family: var(--font-display); font-size: 14px;
 }
-.card .tabs button.on { background: #f0c000; color: #111; font-weight: 600; }
-.card h2 { margin: 2px 0 6px; font-size: 20px; }
-.card label { display: block; font-size: 12px; color: #9aa0ab; margin: 12px 0 4px; }
+.card .tabs button.on { background: var(--butter); color: var(--ink); }
+.card h2 { margin: 2px 0 6px; font-size: 20px; font-family: var(--font-display); font-weight: normal; }
+.card label { display: block; font-size: 12px; color: var(--ink-soft); margin: 12px 0 4px; }
 .card input {
-  width: 100%; box-sizing: border-box; padding: 9px 10px; border-radius: 6px;
-  border: 1px solid #3a3f4b; background: #14161c; color: #fff; font-size: 14px;
+  width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: var(--radius-sm);
+  border: 2px solid var(--line); background: var(--surface-alt); color: var(--ink); font-size: 14px;
+  font-family: var(--font-body);
 }
+.card input:focus { outline: none; border-color: var(--sky-deep); }
 .card .hint { font-size: 11px; margin-top: 4px; min-height: 14px; }
-.card .hint.ok { color: #4caf82; }
-.card .hint.bad { color: #e06a5b; }
+.card .hint.ok { color: var(--mint-deep); }
+.card .hint.bad { color: var(--danger-deep); }
 .card .submit {
-  width: 100%; margin-top: 18px; padding: 11px 0; border: 0; border-radius: 6px;
-  background: #e6e6e6; color: #111; font-size: 15px; cursor: pointer;
+  /* 확정(2026-09-17): 로그인 버튼 = 흰색/회색 계열 */
+  width: 100%; margin-top: 18px; padding: 12px 0; border: none; border-radius: var(--radius-md);
+  background: var(--surface-alt); color: var(--ink); font-family: var(--font-display);
+  font-size: 16px; cursor: pointer; box-shadow: 0 3px 0 var(--line);
 }
+.card .submit:hover:not(:disabled) { transform: translateY(-1px); }
 .card .submit:disabled { opacity: 0.4; cursor: not-allowed; }
-.card .form-error { color: #e06a5b; font-size: 12px; min-height: 16px; margin-top: 10px; text-align: center; }
-.card .form-error.ok { color: #4caf82; }
+.card .form-error { color: var(--danger-deep); font-size: 12px; min-height: 16px; margin-top: 10px; text-align: center; }
+.card .form-error.ok { color: var(--mint-deep); }
 
-#ui-loading { color: #cfd3da; font-size: 16px; letter-spacing: 1px; }
+#ui-loading { color: var(--ink-soft); font-family: var(--font-body); font-size: 16px; letter-spacing: 1px; }

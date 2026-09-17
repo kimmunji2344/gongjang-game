@@ -21,8 +21,8 @@
 - src/sim/    — grid(타일·설치물), zones(십자 3×3 확장 구역), sim(틱 시뮬·그래프 라우팅·가공·셧다운·배치·구역/해금). Phaser 비의존 순수 TS
 - src/auth/   — api (M4 실서버 인증 클라이언트, /api/auth/* 호출)
 - src/net/    — save (서버 세이브 로드/저장)
-- src/ui/     — screens (메뉴/로그인/회원가입/로딩 DOM 화면 + 흐름)
-- src/scenes/ — FactoryScene (렌더 + 입력 + 자동/수동 저장, 플레이스홀더 그래픽)
+- src/ui/     — screens(메뉴/로그인/회원가입/로딩 DOM), theme.css(디자인 토큰), hud.ts/hud.css(인게임 상단바·사이드바·NPC뱃지), popup.ts(팝업·토스트 공용 헬퍼)
+- src/scenes/ — FactoryScene (렌더: 격자·설비·화물만 Phaser 캔버스, 입력 + 자동/수동 저장. HUD·팝업은 src/ui/hud.ts·popup.ts)
 - src/game.ts — 로그인 통과 후 Phaser 지연 로딩 (세이브 주입)
 - server/     — M4 백엔드 (독립 패키지: Express + MongoDB Atlas + bcrypt + JWT). server/.env 는 gitignore
 - test/       — vitest (sim + auth 클라이언트). server/test/ 는 서버 자체 vitest
@@ -42,4 +42,5 @@
 - M5 완료 (로컬): 시즌 랭킹(달력 월 단위)·WAR(효율^0.4×규모^0.35×log10(총자산)^0.25, 로그 미적용)·명예의 전당·랭킹 조회 REST API(`GET /api/rank`, `GET /api/rank/hall-of-fame`). 랭킹은 서버가 `PUT /api/save` 시 저장된 state 로 직접 계산(클라 제출 없음). SimState +`totalRevenue`(평생 누적, 리셋 없음). 세이브 v4→v5.
 - M6 완료 (로컬): NPC 일일 퀘스트(클라 시계 리셋, 전용 지급 UI, Storage 인출)·도감 3종(자원/업적/타일-히든)·튜토리얼 JIT 힌트 3종. 서버 변경 없음(전부 클라 로직). SimState +6 필드. 세이브 v5→v6. 브라우저 실플레이 검증 중 NPC 중복완료 버그 발견·수정.
 - 2026-09-17 "확정 대기 목록" 1차 반영: 자원/가공품/레시피 실제값, 설비비용(Node만 동적가) · 철거비50% · 구역비용 지수식 · 레벨링 공식(1~5레벨 골드만, 최대레벨10) · Exporter 임계값표+레벨당1% 전면 개편. 신규: 컨베이어 업그레이드, 방향 제자리 수정("회전" 도구). 세이브 v6→v7. 자원 도감(캡슐/모듈 등) 완성 대기 항목은 [[공장 게임 확정 대기 목록]]에 원본 유지.
-- 세이브 v7. 다음: 사용자 git push (로컬 미푸시 커밋들) → 자원 도감 완성 후 확정 대기 목록 나머지 항목, 또는 M7(디자인 일괄 교체) / 사용자 지정 작업.
+- M7 1차 완료 (2026-09-18, 로컬): UI/디자인 전면 개편 — 동물의숲류 몽글몽글 감성, 흑백+파스텔, 팝업 위주 UI. Phaser 텍스트 패널/토스트를 전부 DOM(hud.ts/popup.ts)으로 교체, 캔버스는 격자·설비·화물만 파스텔 색+둥근모서리로 렌더. 게임 월드(타일·설비·NPC)까지 포함, 자원/가공품 개별 아이콘만 계속 보류. 세이브 변경 없음(v7 유지, sim.ts 무변경).
+- 세이브 v7. 다음: 사용자 git push (로컬 미푸시 커밋들) → 자원 도감 완성 후 확정 대기 목록 나머지 항목 / 자원 아이콘 디자인.
