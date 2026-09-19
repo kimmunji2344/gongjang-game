@@ -4,7 +4,7 @@ import Phaser from 'phaser';
 import { CONFIG } from '../data/config';
 import { RESOURCES } from '../data/resources';
 import { gradeToTicks } from '../data/speed';
-import { DIR_VEC, Dir, Tile, placeableAt } from '../sim/grid';
+import { DIR_VEC, Dir, Tile, converterFront, placeableAt } from '../sim/grid';
 import { currentDayId } from '../sim/day';
 import {
   HintId,
@@ -41,6 +41,7 @@ import {
   mountHud,
   openCodexPopup,
   openDirectionPopup,
+  openMyBuildingsPopup,
   openNpcPopup,
   openRankLoadingPopup,
   openRankPopup,
@@ -49,11 +50,14 @@ import {
   openStoragePopup,
   openUpgradePopup,
   setActiveTool,
+  setToolCursor,
   updateNpcBadge,
-  updateSidebar,
   updateToolInfo,
   updateTopStats,
 } from '../ui/hud';
+
+const MIN_ZOOM = 0.5;
+const MAX_ZOOM = 3;
 
 const LONG_PRESS_MS = 500; // 2026-09-17 확정: 짧게 클릭=회전, 길게 누르면 방향 선택
 const DIR_CYCLE: readonly Dir[] = ['N', 'E', 'S', 'W'];
@@ -102,6 +106,7 @@ export class FactoryScene extends Phaser.Scene {
   private tool: Tool = 'conveyor';
   private dir: Dir = 'E';
   private nodeResIdx = 0;
+  private zoom = 1; // 2026-09-20 신규: 마우스 휠 확대/축소 (50%~300%)
   private view: View = { minX: 0, minY: 0, cell: CELL, ox: ORIGIN_X, oy: ORIGIN_Y };
   private gfx!: Phaser.GameObjects.Graphics;
   private rotateDownAt: { tile: Tile; time: number } | null = null;
@@ -123,6 +128,7 @@ export class FactoryScene extends Phaser.Scene {
         this.tool = t;
         this.rotateDownAt = null;
         setActiveTool(t);
+        setToolCursor(t);
         if (t === 'converter') {
           this.applyHint(
             'converter',
@@ -135,6 +141,10 @@ export class FactoryScene extends Phaser.Scene {
       onRank: () => void this.openRank(),
       onCodex: () => openCodexPopup(this.sim),
       onNpc: () => openNpcPopup(this.sim, () => this.handInNpc()),
+      onMyBuildings: () => openMyBuildingsPopup(this.sim, shutdownInfo(this.sim)),
+      onCycleDir: () => {
+        this.dir = nextDir(this.dir);
+      },
       onSettings: () =>
         openSettingsPopup(
           () => {
@@ -145,6 +155,7 @@ export class FactoryScene extends Phaser.Scene {
         ),
     });
     setActiveTool(this.tool);
+    setToolCursor(this.tool);
 
     this.applyHint('start', true, '이 둘을 이어보세요! (Node → Exporter, 컨베이어로 연결)');
 
@@ -172,6 +183,13 @@ export class FactoryScene extends Phaser.Scene {
       const n = this.sim.unlockedResources.length;
       this.nodeResIdx = (this.nodeResIdx + 1) % n;
     });
+    this.input.on(
+      'wheel',
+      (_pointer: Phaser.Input.Pointer, _objs: unknown, _dx: number, dy: number) => {
+        const factor = dy > 0 ? 0.9 : 1.1;
+        this.zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, this.zoom * factor));
+      },
+    );
 
     this.time.addEvent({
       delay: CONFIG.autosaveMs,
@@ -223,7 +241,7 @@ export class FactoryScene extends Phaser.Scene {
     const minZY = Math.min(...zy);
     const spanX = (Math.max(...zx) - minZX + 1) * S;
     const spanY = (Math.max(...zy) - minZY + 1) * S;
-    const cell = Math.min(CELL, VIEW_AREA / spanX, VIEW_AREA / spanY);
+    const cell = Math.min(CELL, VIEW_AREA / spanX, VIEW_AREA / spanY) * this.zoom;
     this.view = {
       minX: minZX * S,
       minY: minZY * S,
@@ -477,12 +495,18 @@ export class FactoryScene extends Phaser.Scene {
         g.fillRoundedRect(c.x - box / 2, c.y - box / 2, box, box, radius);
         this.drawDirTriangle(c.x, c.y, p.dir, tri);
       } else if (p.kind === 'converter') {
+        // 2026-09-20 확정: 2×1 풋프린트 — 뒤칸(p.tile)+앞칸(출력) 전체를 하나의 박스로 그림
+        const front = this.center(converterFront(p));
+        const bx0 = Math.min(c.x, front.x) - box / 2;
+        const by0 = Math.min(c.y, front.y) - box / 2;
+        const bw = Math.abs(front.x - c.x) + box;
+        const bh = Math.abs(front.y - c.y) + box;
         g.fillStyle(COLOR.converter, 1);
-        g.fillRoundedRect(c.x - box / 2, c.y - box / 2, box, box, radius);
-        this.drawDirTriangle(c.x, c.y, p.dir, tri);
+        g.fillRoundedRect(bx0, by0, bw, bh, radius);
+        this.drawDirTriangle(front.x, front.y, p.dir, tri); // 앞칸에 출력 방향 표시
         if (shut[p.id]) {
           g.lineStyle(3, COLOR.shutdown, 1);
-          g.strokeRoundedRect(c.x - v.cell / 2 + 1, c.y - v.cell / 2 + 1, v.cell - 2, v.cell - 2, radius);
+          g.strokeRoundedRect(bx0 + 1, by0 + 1, bw - 2, bh - 2, radius);
         }
       } else if (p.kind === 'storage') {
         g.fillStyle(COLOR.storage, 1);
@@ -512,7 +536,6 @@ export class FactoryScene extends Phaser.Scene {
 
     updateTopStats(this.sim);
     updateToolInfo(this.tool, this.dir, RESOURCES[this.nodeResource()]?.name ?? null);
-    updateSidebar(this.sim, shut, (tile) => this.doVent(tile));
     updateNpcBadge(this.sim, () => openNpcPopup(this.sim, () => this.handInNpc()));
   }
 

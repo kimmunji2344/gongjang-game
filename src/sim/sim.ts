@@ -14,17 +14,15 @@ import { gradeToTicks } from '../data/speed';
 import { TILE_PATTERNS } from '../data/tilePatterns';
 import {
   DIR_OPP,
-  DIR_VEC,
   Dir,
   Placeable,
   Tile,
   placeableAt,
+  stepTile,
+  tileEq,
   tileKey,
 } from './grid';
 import { CENTER_ZONE, buyableZones, inOwnedZone } from './zones';
-
-// 한 타일에서 방향 d로 한 칸 이동한 좌표
-const stepTile = (t: Tile, d: Dir): Tile => [t[0] + DIR_VEC[d][0], t[1] + DIR_VEC[d][1]];
 
 // 컨베이어 위를 이동 중인 자원 1개
 export type Cargo = {
@@ -99,9 +97,10 @@ export function storageTotal(state: SimState, storageId: string): number {
   return Object.values(state.storage[storageId] ?? {}).reduce((a, b) => a + b, 0);
 }
 
-// 컨베이어 유효 등급 (2026-09-17 확정: 레벨 오를수록 등급↓ = 빨라짐, 등급 1 캡 — Node 와 동일한 형태)
+// 컨베이어 유효 등급 (2026-09-20 확정: 레벨 1~10 등급을 표로 직접 지정 — 15,14,13,12,11,10,8,6,4,2)
 export function conveyorGrade(level: number): number {
-  return Math.max(1, CONFIG.conveyorStartGrade - (level - 1) * CONFIG.conveyorGradePerLevel);
+  const table = CONFIG.conveyorGradeTable;
+  return table[Math.min(Math.max(level, 1), table.length) - 1];
 }
 
 // ---- 초기 상태 --------------------------------------------------------------
@@ -228,12 +227,25 @@ export type Route = {
   readonly sinkId: string | null;
 };
 
+// Converter 2×1 풋프린트(2026-09-20 확정): 긴 면(뒤·앞칸의 dir 수직 방향) 2면 = 입력,
+// 앞칸의 dir 방향(짧은 면) = 출력, 뒤칸의 반대편(짧은 면)은 닫힘.
+// entryDir = 진입하는 타일의 어느 면으로 들어오는지(그 면이 바라보는 방향).
+function converterAcceptsEntry(
+  p: Extract<Placeable, { kind: 'converter' }>,
+  enteredTile: Tile,
+  entryDir: Dir,
+): boolean {
+  if (tileEq(enteredTile, p.tile)) return entryDir !== DIR_OPP[p.dir]; // 뒤칸 — 반대편만 닫힘
+  return entryDir !== p.dir; // 앞칸 — dir 방향(출력쪽)만 막힘, 나머지 진입은 입력
+}
+
 // first 타일에서 시작해 각 컨베이어의 고정 방향을 타일 단위로 따라간다.
-// 빈 칸 / 맵 밖 / 루프 / Node 가로막음 = blocked.
-function walk(placeables: readonly Placeable[], first: Tile): Route {
+// 빈 칸 / 맵 밖 / 루프 / Node 가로막음 = blocked. entryDir = first 타일에 진입하는 면 방향.
+function walk(placeables: readonly Placeable[], first: Tile, entryDir: Dir): Route {
   const path: Tile[] = [];
   const seen = new Set<string>();
   let cur: Tile = first;
+  let entry = entryDir;
 
   for (;;) {
     const key = tileKey(cur);
@@ -244,20 +256,26 @@ function walk(placeables: readonly Placeable[], first: Tile): Route {
     if (!p) return { path, sink: 'blocked', sinkId: null };
     if (p.kind === 'exporter') return { path: [...path, cur], sink: 'exporter', sinkId: p.id };
     if (p.kind === 'storage') return { path: [...path, cur], sink: 'storage', sinkId: p.id };
-    if (p.kind === 'converter') return { path: [...path, cur], sink: 'converter', sinkId: p.id };
+    if (p.kind === 'converter') {
+      if (!converterAcceptsEntry(p, cur, entry)) return { path, sink: 'blocked', sinkId: null };
+      return { path: [...path, cur], sink: 'converter', sinkId: p.id };
+    }
     if (p.kind !== 'conveyor') return { path, sink: 'blocked', sinkId: null };
 
     path.push(cur);
+    entry = DIR_OPP[p.dir];
     cur = stepTile(cur, p.dir);
   }
 }
 
 // Node / Converter 는 자기 방향(dir)으로 출력한다.
+// Converter 는 2×1 풋프린트라 출력이 "앞칸"에서 나간다 — 그 앞칸에서 한 번 더 dir 방향으로 나가야 실제 첫 경유 타일.
 function routeFrom(placeables: readonly Placeable[], source: Placeable): Route {
   if (source.kind !== 'node' && source.kind !== 'converter') {
     return { path: [], sink: 'blocked', sinkId: null };
   }
-  return walk(placeables, stepTile(source.tile, source.dir));
+  const emitFrom = source.kind === 'converter' ? stepTile(source.tile, source.dir) : source.tile;
+  return walk(placeables, stepTile(emitFrom, source.dir), DIR_OPP[source.dir]);
 }
 
 // 소스 id(Node/Converter) → 그 소스의 출력 경로
@@ -434,7 +452,12 @@ export function step(state: SimState): SimState {
       continue;
     }
     const path = route.path;
-    if (c.index >= path.length - 1) continue; // 방어 (경로 짧아짐)
+    if (c.index >= path.length - 1) {
+      // 방어: 이동 중에 경로가 짧아짐(철거 등) — 예전엔 그냥 소멸시켰는데, 판매/적재 처리 없이
+      // 화물이 사라져 보이는 문제였음(2026-09-20 확인). 남은 마지막 컨베이어 칸으로 당겨서 계속 이동시킨다.
+      if (path.length >= 2) nextCargo.push({ ...c, index: path.length - 2, ticksOnTile: 0 });
+      continue;
+    }
 
     const perTile = ticksForTile(path[c.index]);
     const t = c.ticksOnTile + 1;
@@ -664,10 +687,14 @@ export function placeBuilding(
   return next;
 }
 
+// 2026-09-20 확정: Converter = 2×1 풋프린트 — tile(뒤칸) + 그 앞칸(dir 방향)까지 둘 다 점유·검증한다.
 export function placeConverter(state: SimState, tile: Tile, dir: Dir): PlaceResult {
-  if (!inOwnedZone(state.ownedZones, tile)) return NOT_OWNED_MSG;
-  if (occupied(state, tile)) return '이미 설치물이 있습니다';
-  if (facesHeadOn(state.placeables, tile, dir)) return HEAD_ON_MSG;
+  const front = stepTile(tile, dir);
+  if (!inOwnedZone(state.ownedZones, tile) || !inOwnedZone(state.ownedZones, front)) {
+    return NOT_OWNED_MSG;
+  }
+  if (occupied(state, tile) || occupied(state, front)) return '이미 설치물이 있습니다';
+  if (facesHeadOn(state.placeables, front, dir)) return HEAD_ON_MSG;
   if (state.gold < CONFIG.converterCost) return `골드 부족 (필요 ${CONFIG.converterCost}G)`;
   return {
     ...state,
@@ -890,7 +917,18 @@ export function rotatePlaceable(state: SimState, tile: Tile, dir: Dir): PlaceRes
     return '방향이 없는 설비입니다';
   }
   if (p.dir === dir) return state;
-  if (facesHeadOn(state.placeables, tile, dir)) return HEAD_ON_MSG;
+
+  // Converter 는 2×1 풋프린트라 회전하면 앞칸(출력쪽) 위치 자체가 바뀐다 — 그 새 자리를 검증해야 함.
+  if (p.kind === 'converter') {
+    const newFront = stepTile(p.tile, dir);
+    if (!inOwnedZone(state.ownedZones, newFront)) return NOT_OWNED_MSG;
+    const occupant = placeableAt(state.placeables, newFront);
+    if (occupant) return '그 방향에는 공간이 없습니다';
+    if (facesHeadOn(state.placeables, newFront, dir)) return HEAD_ON_MSG;
+  } else if (facesHeadOn(state.placeables, tile, dir)) {
+    return HEAD_ON_MSG;
+  }
+
   return {
     ...state,
     placeables: state.placeables.map((x) => (x.id === p.id ? { ...x, dir } : x)),

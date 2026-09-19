@@ -5,7 +5,7 @@ import { ACHIEVEMENTS } from '../data/achievements';
 import { CONFIG } from '../data/config';
 import { RESOURCES } from '../data/resources';
 import { TILE_PATTERNS } from '../data/tilePatterns';
-import { DIR_ARROW, Dir, Tile } from '../sim/grid';
+import { DIR_ARROW, Dir } from '../sim/grid';
 import {
   SimState,
   UpgradeCost,
@@ -61,6 +61,8 @@ export interface HudCallbacks {
   onCodex(): void;
   onNpc(): void;
   onSettings(): void;
+  onMyBuildings(): void;
+  onCycleDir(): void;
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string): HTMLElementTagNameMap[K] {
@@ -103,6 +105,7 @@ export function mountHud(cb: HudCallbacks): void {
 
   const actions: [string, () => void][] = [
     ['💾 저장', cb.onSave],
+    ['🏭 내 설비', cb.onMyBuildings],
     ['🏆 랭킹', cb.onRank],
     ['📖 도감', cb.onCodex],
     ['👤 NPC', cb.onNpc],
@@ -115,12 +118,13 @@ export function mountHud(cb: HudCallbacks): void {
     toolrow.appendChild(b);
   }
 
+  // 방향 칩 — 클릭하면 R키와 동일하게 방향 순환 (2026-09-20: 상호작용 안 되던 문제 해결)
+  statsTool.style.cursor = 'pointer';
+  statsTool.title = '클릭하거나 R 키를 눌러 방향을 바꿀 수 있어요';
+  statsTool.onclick = cb.onCycleDir;
+
   topbar.append(stats, toolrow);
   document.getElementById('gj-shell')?.prepend(topbar);
-
-  const sidebar = el('div');
-  sidebar.id = 'gj-sidebar';
-  document.body.appendChild(sidebar);
 }
 
 export function setActiveTool(tool: Tool): void {
@@ -139,60 +143,89 @@ export function updateTopStats(sim: SimState): void {
 
 /** 현재 도구가 방향/자원을 갖는 배치 도구일 때, 설치될 방향·자원을 상단바에 표시 */
 export function updateToolInfo(tool: Tool, dir: Dir, nodeResourceName: string | null): void {
-  const dirPart = DIRECTIONAL_TOOLS.has(tool) ? ` 방향 ${DIR_ARROW[dir]}` : '';
+  const dirPart = DIRECTIONAL_TOOLS.has(tool) ? ` 방향 ${DIR_ARROW[dir]} (R/클릭으로 회전)` : '';
   const resPart = tool === 'node' && nodeResourceName ? ` · 자원 ${nodeResourceName}` : '';
   statsTool.textContent = `🔧 ${TOOL_LABEL[tool]}${dirPart}${resPart}`;
 }
 
-export function updateSidebar(
+// 업글/회전/긴급배출/철거 도구 선택 시 캔버스 마우스 커서를 심플한 원형 아이콘으로 교체 (2026-09-20 신규)
+const CURSOR_SYMBOL: Partial<Record<Tool, string>> = {
+  upgrade: '⬆',
+  rotate: '↻',
+  vent: '▼',
+  remove: '✕',
+};
+const cursorCache = new Map<string, string>();
+function cursorFor(symbol: string): string {
+  const cached = cursorCache.get(symbol);
+  if (cached) return cached;
+  const svg =
+    `<svg xmlns='http://www.w3.org/2000/svg' width='28' height='28'>` +
+    `<circle cx='14' cy='14' r='12' fill='white' stroke='#4a4744' stroke-width='2'/>` +
+    `<text x='14' y='19' font-size='14' text-anchor='middle' fill='#4a4744'>${symbol}</text></svg>`;
+  const value = `url("data:image/svg+xml,${encodeURIComponent(svg)}") 14 14, pointer`;
+  cursorCache.set(symbol, value);
+  return value;
+}
+
+export function setToolCursor(tool: Tool): void {
+  const canvas = document.querySelector('#app canvas') as HTMLElement | null;
+  if (!canvas) return;
+  const symbol = CURSOR_SYMBOL[tool];
+  canvas.style.cursor = symbol ? cursorFor(symbol) : '';
+}
+
+// 내 설비 팝업 — 같은 종류+레벨(Node 는 +자원)끼리 개수로 묶어서 표시 (2026-09-20 확정: "전부 묶어줘")
+export function openMyBuildingsPopup(
   sim: SimState,
   shut: Record<string, { resources: string[]; weight: number }>,
-  onVent: (tile: Tile) => void,
 ): void {
-  const sidebar = document.getElementById('gj-sidebar');
-  if (!sidebar) return;
-  const topbar = document.getElementById('gj-topbar');
-  if (topbar) sidebar.style.top = `${topbar.getBoundingClientRect().height + 14}px`;
-  sidebar.innerHTML = '<h4>내 설비</h4>';
   if (sim.placeables.length === 0) {
-    sidebar.innerHTML += '<div class="gj-srow">아직 설치한 설비가 없어요</div>';
+    openPopup({ title: '🏭 내 설비', accent: 'var(--mint)', bodyHtml: '아직 설치한 설비가 없어요' });
     return;
   }
+  const order: string[] = [];
+  const groups = new Map<string, { label: string; count: number }>();
+  let shutCount = 0;
+
   for (const p of sim.placeables) {
-    const row = el('div', 'gj-srow');
+    let key: string;
+    let label: string;
     if (p.kind === 'node') {
       const lv = sim.nodeLevel[p.id] ?? 1;
-      row.textContent = `🌱 Node Lv${lv} (${RESOURCES[p.resource]?.name ?? p.resource})`;
+      key = `node-${lv}-${p.resource}`;
+      label = `🌱 Node Lv${lv} (${RESOURCES[p.resource]?.name ?? p.resource})`;
+    } else if (p.kind === 'conveyor') {
+      const lv = sim.conveyorLevel[p.id] ?? 1;
+      key = `conveyor-${lv}`;
+      label = `➡️ 컨베이어 Lv${lv}`;
     } else if (p.kind === 'converter') {
-      const bl = sim.converterBacklog[p.id] ?? {};
-      const parts = Object.entries(bl).map(([r, n]) => `${RESOURCES[r]?.name ?? r}x${n}`);
-      const sd = shut[p.id];
-      row.textContent = `🔮 Converter — 재고 ${parts.length ? parts.join(' ') : '없음'}`;
-      if (sd) {
-        row.classList.add('danger');
-        row.textContent += ` · ⚠ ${sd.resources.map((r) => RESOURCES[r]?.name ?? r).join(',')} 과잉`;
-        const vent = el('button', 'vent-btn');
-        vent.textContent = '긴급배출 (무료, 임시방편)';
-        vent.onclick = () => onVent(p.tile);
-        row.appendChild(vent);
-      }
+      key = 'converter';
+      label = '🔮 Converter';
+      if (shut[p.id]) shutCount += 1;
     } else if (p.kind === 'storage') {
       const lv = sim.storageLevel[p.id] ?? 1;
-      row.textContent = `📦 Storage Lv${lv} — ${storageTotal(sim, p.id)}/${storageCap(lv)}`;
-    } else if (p.kind === 'exporter') {
-      const lv = sim.exporterLevel[p.id] ?? 1;
-      const prog = sim.exporterProgress[p.id] ?? 0;
-      const pct = Math.round(lv * CONFIG.exporterRevenuePctPerLevel * 100);
-      const next =
-        lv < CONFIG.maxLevel ? `${prog}/${CONFIG.exporterLevelThresholds[lv - 1]}` : '최대';
-      row.textContent = `🚚 Exporter Lv${lv} (+${pct}%, ${next})`;
+      key = `storage-${lv}`;
+      label = `📦 Storage Lv${lv}`;
     } else {
-      const lv = sim.conveyorLevel[p.id] ?? 1;
-      if (lv <= 1) continue;
-      row.textContent = `➡️ 컨베이어 Lv${lv}`;
+      const lv = sim.exporterLevel[p.id] ?? 1;
+      key = `exporter-${lv}`;
+      label = `🚚 Exporter Lv${lv}`;
     }
-    sidebar.appendChild(row);
+    const g = groups.get(key);
+    if (g) g.count += 1;
+    else {
+      groups.set(key, { label, count: 1 });
+      order.push(key);
+    }
   }
+
+  const rows = order.map((key) => {
+    const g = groups.get(key)!;
+    const extra = key === 'converter' && shutCount > 0 ? ` · ⚠️${shutCount}개 셧다운` : '';
+    return `<div class="row"><span>${g.label}</span><span>${g.count}개${extra}</span></div>`;
+  });
+  openPopup({ title: '🏭 내 설비', accent: 'var(--mint)', bodyHtml: rows.join('') });
 }
 
 export function updateNpcBadge(sim: SimState, onClick: () => void): void {

@@ -4,14 +4,15 @@
 export const CONFIG = {
   tickHz: 10, // 초당 시뮬 틱 (속도 등급 0.1초 = 1틱)
 
-  // M3-A 확장 구역 (십자 3×3). 중앙 구역 = 타일 [0..9, 0..9], 시작부터 소유.
-  zone: { size: 10, span: 1 }, // span=1 → 구역 좌표 -1..1 (3×3)
+  // 확장 구역. 중앙 구역 = 타일 [0..4, 0..4], 시작부터 소유.
+  // 2026-09-20 확정: 구역 크기 10×10→5×5로 축소, span 1→10으로 확대(가로세로 10구역씩, 최대 21×21구역).
+  zone: { size: 5, span: 10 },
   zoneCostBase: 1000,    // 확정 (2026-09-17): 1번째 구역 비용
   zoneCostGrowth: 1.15,  // 임시 적용 (사용자: "게임 진행해 보고 체감상으로 조절할게") — 비용(n) = base × growth^(n-1)
   resourceUnlockChips: 10,     // 누적 칩 판매 이만큼이면 스크랩·데브리 해금 (여전히 임시)
 
   startingGold: 0,        // Obsidian 명시값
-  freeConveyors: 3,       // Obsidian 명시값: 무료 컨베이어 3개
+  freeConveyors: 2,       // 2026-09-20: 구역 5×5 축소로 시작 킷 간격이 3칸→2칸이 되어 맞춰 조정
   conveyorCost: 5,        // 확정 (2026-09-17)
   nodeCostBase: 15,       // 확정: Node 설치비 = 이 값 × 현재 보유 Node 개수 (구역비용과 동일한 방식, 살수록 오름)
   exporterCost: 20,       // 확정 (2026-09-17), 고정가
@@ -43,13 +44,14 @@ export const CONFIG = {
   npcAlphaMultiplier: 3, // 보상 = 기본 판매가 × 수량 × 이 배수
 
   // 컨베이어 업그레이드 (신규, 확정 2026-09-17) — 골드 공식은 위 upgradeCostBase/Growth 재사용.
-  conveyorStartGrade: 19,     // 레벨1 등급 (등급→초 매핑: 19등급 = 10초/칸)
-  conveyorGradePerLevel: 1,   // 레벨당 등급 감소량 — "게임 진행하면서 조절"하기로 함, 우선 Node 와 동일값
+  // 2026-09-20 확정: 레벨1~10 등급을 표로 직접 지정(등급→초 매핑: gradeToTicks 참고).
+  conveyorGradeTable: [15, 14, 13, 12, 11, 10, 8, 6, 4, 2] as const,
 
-  // 시작 킷: Node(칩) 1 + Exporter 1 배치. 사이 3칸은 플레이어가 무료 컨베이어로 연결.
-  // 칩 Node는 동쪽(Exporter 방향)을 향함. 플레이어가 컨베이어 3개를 동쪽 방향으로 이어주면 연결됨.
+  // 시작 킷: Node(칩) 1 + Exporter 1 배치. 사이 2칸은 플레이어가 무료 컨베이어로 연결.
+  // 2026-09-20 확정: 구역이 5×5(타일 0~4)로 줄어들어 좌표 재배치(간격은 유지, 3칸→2칸).
+  // 칩 Node는 동쪽(Exporter 방향)을 향함. 플레이어가 컨베이어 2개를 동쪽 방향으로 이어주면 연결됨.
   startKit: {
-    node: { resource: 'chip', tile: [2, 4] as readonly [number, number], dir: 'E' as const },
-    exporter: { tile: [6, 4] as readonly [number, number] },
+    node: { resource: 'chip', tile: [0, 2] as readonly [number, number], dir: 'E' as const },
+    exporter: { tile: [3, 2] as readonly [number, number] },
   },
 } as const;

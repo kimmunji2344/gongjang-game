@@ -26,8 +26,8 @@ export type Placeable =
     }
   | { readonly kind: 'exporter'; readonly id: string; readonly tile: Tile }
   | { readonly kind: 'conveyor'; readonly id: string; readonly tile: Tile; readonly dir: Dir }
-  // Converter: dir = 출력 방향 (Node 와 동일 규칙 — 설치 전 회전, 설치 후 고정).
-  //            나머지 3면 중 방향이 맞는 컨베이어가 입력.
+  // Converter: 2×1 풋프린트(2026-09-20 확정) — tile(뒤칸) + tile 에서 dir 방향으로 한 칸(앞칸, 파생값, 별도 저장 안 함).
+  //            긴 면(2칸) 양쪽 = 입력, 앞칸의 dir 방향(짧은 면) = 출력, 뒤칸의 반대편(짧은 면)은 닫힘.
   | { readonly kind: 'converter'; readonly id: string; readonly tile: Tile; readonly dir: Dir }
   // Storage: 방향 없음 (Exporter 처럼 어느 방향에서 오는 컨베이어든 받음).
   | { readonly kind: 'storage'; readonly id: string; readonly tile: Tile };
@@ -35,5 +35,11 @@ export type Placeable =
 export const tileEq = (a: Tile, b: Tile): boolean => a[0] === b[0] && a[1] === b[1];
 export const tileKey = (t: Tile): string => `${t[0]},${t[1]}`;
 
+// 한 타일에서 방향 d로 한 칸 이동한 좌표
+export const stepTile = (t: Tile, d: Dir): Tile => [t[0] + DIR_VEC[d][0], t[1] + DIR_VEC[d][1]];
+
+// Converter 의 앞칸(출력 방향 쪽 파생 타일)
+export const converterFront = (p: { tile: Tile; dir: Dir }): Tile => stepTile(p.tile, p.dir);
+
 export const placeableAt = (ps: readonly Placeable[], t: Tile): Placeable | undefined =>
-  ps.find((p) => tileEq(p.tile, t));
+  ps.find((p) => tileEq(p.tile, t) || (p.kind === 'converter' && tileEq(converterFront(p), t)));

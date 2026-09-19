@@ -34,11 +34,11 @@ import {
   SimState,
 } from '../src/sim/sim';
 
-// 시작 킷: 칩 Node[2,4]는 동쪽을 향함 → 컨베이어 3칸을 모두 동쪽(E)으로 이어 Exporter[6,4]에 연결
+// 시작 킷(2026-09-20 확정: 구역 5×5): 칩 Node[0,2]는 동쪽을 향함 → 컨베이어 2칸을 동쪽(E)으로 이어 Exporter[3,2]에 연결
 const connectStartKit = (start: SimState): SimState => {
   let s = start;
-  for (const x of [3, 4, 5]) {
-    const r = placeConveyor(s, [x, 4], 'E');
+  for (const x of [1, 2]) {
+    const r = placeConveyor(s, [x, 2], 'E');
     if (typeof r === 'string') throw new Error(r);
     s = r;
   }
@@ -70,15 +70,15 @@ describe('속도 등급 매핑 (Obsidian 2026-09-06)', () => {
 });
 
 describe('M1 코어 루프', () => {
-  it('시작 상태: Node 미연결, 골드 0, 무료 컨베이어 3', () => {
+  it('시작 상태: Node 미연결, 골드 0, 무료 컨베이어 2', () => {
     const s = initialState();
     const node = s.placeables.find((p) => p.kind === 'node')!;
     expect(findPath(s.placeables, node)).toBeNull();
     expect(s.gold).toBe(0);
-    expect(s.freeConveyors).toBe(3);
+    expect(s.freeConveyors).toBe(2);
   });
 
-  it('무료 컨베이어 3개로 Node-Exporter 연결 (골드 차감 없음)', () => {
+  it('무료 컨베이어 2개로 Node-Exporter 연결 (골드 차감 없음)', () => {
     const s = connectStartKit(initialState());
     const node = s.placeables.find((p) => p.kind === 'node')!;
     expect(findPath(s.placeables, node)).not.toBeNull();
@@ -114,11 +114,10 @@ describe('컨베이어 방향 규칙 (Obsidian 2026-09-06)', () => {
   it('방향이 안 맞으면 Exporter에 도달 못 함 (연결 안 됨)', () => {
     let s = initialState();
     for (const [x, d] of [
-      [3, 'N'],
-      [4, 'E'],
-      [5, 'E'],
+      [1, 'N'],
+      [2, 'E'],
     ] as const) {
-      const r = placeConveyor(s, [x, 4], d);
+      const r = placeConveyor(s, [x, 2], d);
       if (typeof r === 'string') throw new Error(r);
       s = r;
     }
@@ -154,18 +153,18 @@ describe('철거 (2026-09-17 확정: 철거비 = 그 순간 설치비의 50%)', 
     const s = initialState();
     const nodeFee = Math.round(nodeCost(s) * CONFIG.removalFeeRatio); // 15×1개 × 50%
     const exporterFee = Math.round(CONFIG.exporterCost * CONFIG.removalFeeRatio);
-    expect(removePlaceable(s, [2, 4])).toBe(`골드 부족 (철거비 ${nodeFee}G)`);
-    expect(removePlaceable(s, [6, 4])).toBe(`골드 부족 (철거비 ${exporterFee}G)`);
+    expect(removePlaceable(s, [0, 2])).toBe(`골드 부족 (철거비 ${nodeFee}G)`);
+    expect(removePlaceable(s, [3, 2])).toBe(`골드 부족 (철거비 ${exporterFee}G)`);
   });
 
   it('골드가 있으면 철거되고 철거비만큼 차감', () => {
     let s = connectStartKit(initialState());
     for (let i = 0; i < 600; i++) s = step(s);
     const before = s.gold;
-    const r = removePlaceable(s, [4, 4]);
+    const r = removePlaceable(s, [2, 2]);
     if (typeof r === 'string') throw new Error(r);
     expect(r.gold).toBe(before - Math.round(CONFIG.conveyorCost * CONFIG.removalFeeRatio));
-    expect(r.placeables.some((p) => p.kind === 'conveyor' && p.tile[0] === 4)).toBe(false);
+    expect(r.placeables.some((p) => p.kind === 'conveyor' && p.tile[0] === 2)).toBe(false);
   });
 
   it('없는 타일 철거는 실패', () => {
@@ -186,21 +185,19 @@ describe('M2 레시피 매칭', () => {
   });
 });
 
-// 칩 Node[1,1]↓ → 컨베이어[1,2]↓ → Converter[1,3](출력→) ,  데브리 Node[1,5]↑ → 컨베이어[1,4]↑ → Converter[1,3]
-// Converter 출력 → 컨베이어[2,3]→ → Exporter[3,3]
+// 2026-09-20 확정: Converter = 2×1(뒤칸+앞칸), 구역 5×5(0~4) — 자리를 아껴 직접 인접시킴.
+// 칩 Node[1,0]↓, 데브리 Node[1,2]↑ 가 각각 Converter 뒤칸[1,1](dir E, 앞칸[2,1])의 긴 면(남/북)으로 입력.
+// Converter 출력(앞칸 [2,1]의 동쪽) → Exporter[3,1] 직접 인접.
 const converterRig = (): SimState => {
   let s: SimState = {
     ...initialState(),
     gold: 100000,
     unlockedResources: ['chip', 'scrap', 'debris'],
   };
-  s = ok(placeBuilding(s, 'node', [1, 1], 'chip', 'S'));
-  s = ok(placeConveyor(s, [1, 2], 'S'));
-  s = ok(placeConverter(s, [1, 3], 'E'));
-  s = ok(placeBuilding(s, 'node', [1, 5], 'debris', 'N'));
-  s = ok(placeConveyor(s, [1, 4], 'N'));
-  s = ok(placeConveyor(s, [2, 3], 'E'));
-  s = ok(placeBuilding(s, 'exporter', [3, 3]));
+  s = ok(placeBuilding(s, 'node', [1, 0], 'chip', 'S'));
+  s = ok(placeBuilding(s, 'node', [1, 2], 'debris', 'N'));
+  s = ok(placeConverter(s, [1, 1], 'E'));
+  s = ok(placeBuilding(s, 'exporter', [3, 1]));
   return s;
 };
 
@@ -217,9 +214,9 @@ describe('M2 Converter 가공', () => {
       ...initialState(),
       gold: 0,
       placeables: [
-        { kind: 'converter', id: 'c', tile: [1, 1], dir: 'E' },
-        { kind: 'conveyor', id: 'cv', tile: [2, 1], dir: 'E' },
-        { kind: 'exporter', id: 'ex', tile: [3, 1] },
+        { kind: 'converter', id: 'c', tile: [1, 1], dir: 'E' }, // 앞칸 = [2,1]
+        { kind: 'conveyor', id: 'cv', tile: [3, 1], dir: 'E' },
+        { kind: 'exporter', id: 'ex', tile: [4, 1] },
       ],
       converterBacklog: { c: { chip: 1, scrap: 1 } },
     };
@@ -231,10 +228,12 @@ describe('M2 Converter 가공', () => {
 
 describe('M2 Storage', () => {
   it('용량까지만 채우고 초과분은 벨트에서 대기', () => {
+    // placeables: [] — 기본 시작 킷(칩 Node[0,2]→[3,2] 부근)이 이 리그의 [1,1]~[1,4] 경로와 안 겹치게 비움
     let s: SimState = {
       ...initialState(),
       gold: 100000,
       unlockedResources: ['chip', 'scrap', 'debris'],
+      placeables: [],
     };
     s = ok(placeBuilding(s, 'node', [1, 1], 'scrap', 'S'));
     s = ok(placeConveyor(s, [1, 2], 'S'));
@@ -328,14 +327,14 @@ describe('M3-A 확장 구역 (2026-09-17 확정: 지수식 비용, base=1000 gro
   it('골드 부족 / 이미 소유 / 범위 밖 구매 거부', () => {
     expect(buyZone({ ...initialState(), gold: 500 }, '1,0')).toBe('골드 부족 (필요 1000G)');
     expect(buyZone({ ...initialState(), gold: 100 }, '0,0')).toBe('이미 소유한 구역입니다');
-    expect(buyZone({ ...initialState(), gold: 100 }, '2,0')).toBe('인접한 구역이 아닙니다'); // 3×3 밖
+    expect(buyZone({ ...initialState(), gold: 100 }, '2,0')).toBe('인접한 구역이 아닙니다'); // 중앙과 안 닿음(2칸 거리)
   });
 
   it('소유하지 않은 구역엔 설치 불가, 구매 후 가능', () => {
     let s: SimState = { ...initialState(), gold: 10000 };
-    expect(placeConveyor(s, [12, 4], 'E')).toBe('소유하지 않은 구역입니다'); // 동쪽 팔 타일
+    expect(placeConveyor(s, [5, 2], 'E')).toBe('소유하지 않은 구역입니다'); // 동쪽 팔 타일(구역 '1,0', 5×5 기준)
     s = buyZone(s, '1,0') as SimState;
-    expect(typeof placeConveyor(s, [12, 4], 'E')).not.toBe('string');
+    expect(typeof placeConveyor(s, [5, 2], 'E')).not.toBe('string');
   });
 });
 
@@ -424,11 +423,12 @@ describe('M3-B Node 유효 등급 / Storage 용량 / 컨베이어 등급 (2026-0
     expect(storageCap(2)).toBe(260);
     expect(storageCap(3)).toBe(510);
   });
-  it('conveyorGrade: 시작 등급19, 레벨당 -1, 등급 1 캡 (신규)', () => {
-    expect(conveyorGrade(1)).toBe(19);
-    expect(conveyorGrade(2)).toBe(18);
-    expect(conveyorGrade(19)).toBe(1);
-    expect(conveyorGrade(30)).toBe(1);
+  it('conveyorGrade: 레벨 1~10 등급표 (2026-09-20 확정: 15,14,13,12,11,10,8,6,4,2)', () => {
+    expect(conveyorGrade(1)).toBe(15);
+    expect(conveyorGrade(5)).toBe(11);
+    expect(conveyorGrade(6)).toBe(10);
+    expect(conveyorGrade(10)).toBe(2);
+    expect(conveyorGrade(30)).toBe(2); // 표 범위 밖은 마지막 값(레벨10)으로 캡
   });
 });
 
@@ -512,10 +512,12 @@ describe('M3-B 설비 업그레이드 (2026-09-17 확정: 1~5레벨 골드만·1
 
 describe('M3-B Storage 자원별 보관', () => {
   it('서로 다른 자원 2종이 한 Storage 에 나뉘어 쌓임', () => {
+    // placeables: [] — 기본 시작 킷의 Exporter[3,2]가 이 리그의 conveyor[3,2] 자리와 겹쳐서 비움
     let s: SimState = {
       ...initialState(),
       gold: 100000,
       unlockedResources: ['chip', 'scrap', 'debris'],
+      placeables: [],
     };
     s = ok(placeBuilding(s, 'node', [1, 1], 'scrap', 'E'));
     s = ok(placeConveyor(s, [2, 1], 'E'));
@@ -788,6 +790,32 @@ describe('2026-09-17 신규 — 컨베이어 업그레이드가 실제 통과 �
   });
 });
 
+describe('2026-09-20 수정 — 이동 중 경로가 짧아져도 화물이 소멸 없이 이어서 이동한다', () => {
+  it('경유 컨베이어 자리가 다른 종착지로 바뀌어 경로가 짧아져도 화물이 사라지지 않는다', () => {
+    let s: SimState = {
+      ...initialState(),
+      gold: 100000,
+      placeables: [
+        { kind: 'node', id: 'n', resource: 'chip', tile: [0, 0], dir: 'E' },
+        { kind: 'conveyor', id: 'c1', tile: [1, 0], dir: 'E' },
+        { kind: 'conveyor', id: 'c2', tile: [2, 0], dir: 'E' },
+        { kind: 'exporter', id: 'e', tile: [3, 0] },
+      ],
+      nodeCooldown: { n: 1000 }, // 이 틱엔 새로 생산 안 함 — 기존 화물 하나만 관찰
+      cargo: [{ resource: 'chip', sourceId: 'n', index: 1, ticksOnTile: 3 }], // c2([2,0]) 위를 이동 중
+    };
+    // c2 자리를 Storage 로 교체 — 경로가 [c1,c2,exporter](길이3)에서 [c1,storage](길이2)로 짧아지지만
+    // 여전히 유효한 종착지(storage)로 연결됨 — 화물의 index(1)가 새 경로 밖으로 밀려남
+    s = ok(removePlaceable(s, [2, 0]));
+    s = ok(placeStorage(s, [2, 0]));
+    const before = s.gold;
+    s = step(s);
+    expect(s.cargo.length).toBe(1); // 소멸하지 않고 남은 마지막 컨베이어(c1)로 당겨져 계속 이동
+    expect(s.cargo[0].index).toBe(0);
+    expect(s.gold).toBe(before); // 아직 판매/적재되지 않음(소실도, 조기판정도 아님)
+  });
+});
+
 describe('2026-09-17 신규 — 제자리 방향 수정 (무료, 헤드온 규칙 유지)', () => {
   it('컨베이어 방향을 무료로 바꾼다', () => {
     let s = initialState();
@@ -800,7 +828,7 @@ describe('2026-09-17 신규 — 제자리 방향 수정 (무료, 헤드온 규�
   });
 
   it('Node/Converter 방향도 바꿀 수 있다', () => {
-    const r = ok(rotatePlaceable(initialState(), [2, 4], 'S')); // 시작 Node
+    const r = ok(rotatePlaceable(initialState(), [0, 2], 'S')); // 시작 Node
     const p = r.placeables.find((x) => x.id === 'node-1')!;
     expect(p.kind === 'node' && p.dir).toBe('S');
   });
@@ -813,11 +841,64 @@ describe('2026-09-17 신규 — 제자리 방향 수정 (무료, 헤드온 규�
   });
 
   it('Storage/Exporter 는 방향이 없어 거부', () => {
-    expect(rotatePlaceable(initialState(), [6, 4], 'N')).toBe('방향이 없는 설비입니다'); // Exporter
+    expect(rotatePlaceable(initialState(), [3, 2], 'N')).toBe('방향이 없는 설비입니다'); // Exporter
   });
 
   it('설치물이 없는 타일은 거부', () => {
     expect(rotatePlaceable(initialState(), [0, 0], 'N')).toBe('설치물이 없습니다');
+  });
+});
+
+describe('2026-09-20 신규 — Converter 2×1 풋프린트 (긴 면 2개 입력, 짧은 면 1개 출력)', () => {
+  it('설치 시 앞칸(출력 방향 한 칸)도 함께 점유 — 앞칸이 막혀 있으면 설치 실패', () => {
+    let s: SimState = { ...initialState(), gold: 100000, placeables: [] };
+    s = ok(placeStorage(s, [2, 1])); // 앞칸이 될 자리를 미리 막아둠
+    expect(placeConverter(s, [1, 1], 'E')).toBe('이미 설치물이 있습니다');
+  });
+
+  it('긴 면(수직) 양쪽 모두에서 입력을 받는다', () => {
+    let s: SimState = {
+      ...initialState(),
+      gold: 100000,
+      unlockedResources: ['chip', 'scrap', 'debris'],
+      placeables: [],
+    };
+    s = ok(placeBuilding(s, 'node', [1, 0], 'chip', 'S')); // 뒤칸[1,1] 북쪽 면(긴 면)에서 입력
+    s = ok(placeBuilding(s, 'node', [1, 2], 'debris', 'N')); // 뒤칸[1,1] 남쪽 면(긴 면)에서 입력
+    s = ok(placeConverter(s, [1, 1], 'E'));
+    s = ok(placeBuilding(s, 'exporter', [3, 1]));
+    for (let i = 0; i < 800; i++) s = step(s);
+    expect(s.gold).toBeGreaterThanOrEqual(effectivePrice('core', 1));
+  });
+
+  it('뒤칸의 반대편(닫힌 짧은 면)으로는 입력이 막힌다', () => {
+    let s: SimState = {
+      ...initialState(),
+      gold: 100000,
+      unlockedResources: ['chip', 'scrap', 'debris'],
+      placeables: [],
+    };
+    s = ok(placeConverter(s, [1, 1], 'E')); // dir=E → 뒤칸[1,1]의 반대편(서쪽)은 닫힘
+    s = ok(placeBuilding(s, 'node', [0, 1], 'chip', 'E')); // 서쪽에서 동쪽(뒤칸)으로 밀어넣으려 시도
+    const node = s.placeables.find((p) => p.kind === 'node')!;
+    expect(findPath(s.placeables, node)).toBeNull(); // 닫힌 면 — blocked
+  });
+
+  it('회전하면 앞칸 위치가 바뀐다 — 새 앞칸이 막혀 있으면 회전 거부', () => {
+    let s: SimState = { ...initialState(), gold: 100000, placeables: [] };
+    s = ok(placeConverter(s, [1, 1], 'E')); // 앞칸 [2,1]
+    s = ok(placeStorage(s, [1, 0])); // 회전 후 앞칸이 될 [1,0] 자리를 막아둠
+    expect(rotatePlaceable(s, [1, 1], 'N')).toBe('그 방향에는 공간이 없습니다');
+    const r = ok(rotatePlaceable(s, [1, 1], 'S')); // [1,2] 는 비어 있음 — 회전 성공
+    const p = r.placeables.find((x) => x.kind === 'converter')!;
+    expect(p.kind === 'converter' && p.dir).toBe('S');
+  });
+
+  it('앞칸을 클릭해도 같은 Converter 가 조회된다 (제거도 앞칸 좌표로 가능)', () => {
+    let s: SimState = { ...initialState(), gold: 100000, placeables: [] };
+    s = ok(placeConverter(s, [1, 1], 'E')); // 앞칸 [2,1]
+    const r = ok(removePlaceable(s, [2, 1])); // 앞칸 좌표로 철거
+    expect(r.placeables.some((p) => p.kind === 'converter')).toBe(false);
   });
 });
 
