@@ -37,7 +37,7 @@ export const CONFIG = {
   storageCapPerLevel: 250,      // 확정 (2026-09-17)
   exporterLevelThresholds: [50, 100, 200, 500, 1000, 2500, 6000, 10000, 100000] as const, // 확정: n번째 값 = n레벨→n+1레벨 필요 누적 판매 수
   exporterRevenuePctPerLevel: 0.01, // 확정: 레벨당 수익률 = +레벨×1% (레벨5=+5%, 레벨10=+10%)
-  tierPriceBonus: 0.5,          // 가공 tier 당 판매가 배율 — 자원 도감 완성 후 정하기로 함, 임시 유지
+  tierPriceBonus: 0,            // tier 효과는 resources.ts 판매가 표에 이미 반영(2026-10-25) — 별도 배율 없음
 
   // M6 NPC 일일 퀘스트 — 확정 (2026-09-17). 특정 자원 가중치는 자원 도감 완성 후.
   npcQuestQty: 3,        // 하루 요청 수량

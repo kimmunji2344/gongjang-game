@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { CONFIG } from '../src/data/config';
 import { gradeToSeconds } from '../src/data/speed';
-import { findRecipe } from '../src/data/recipes';
+import { findRecipe, RECIPES } from '../src/data/recipes';
+import { RESOURCES } from '../src/data/resources';
 import {
   initialState,
   step,
@@ -176,12 +177,27 @@ describe('철거 (2026-09-17 확정: 철거비 = 그 순간 설치비의 50%)', 
 
 describe('M2 레시피 매칭', () => {
   it('입력이 전부 갖춰진 레시피를 찾는다', () => {
-    expect(findRecipe(['chip', 'debris'])?.id).toBe('core');
-    expect(findRecipe(['chip', 'scrap'])?.id).toBe('plate'); // core 실패(데브리 없음) → plate 로 대체
+    expect(findRecipe({ scrap: 1, chip: 1 })?.id).toBe('core');
+    expect(findRecipe({ chip: 1, debris: 1 })?.id).toBe('pulse');
+  });
+  it('같은 자원 2개 레시피(스크랩+스크랩→메탈)는 2개가 쌓여야 가공된다', () => {
+    expect(findRecipe({ scrap: 1 })).toBeNull();
+    expect(findRecipe({ scrap: 2 })?.id).toBe('metal');
+  });
+  it('서로 다른 재료 레시피가 같은 재료 2개 레시피보다 우선한다', () => {
+    expect(findRecipe({ scrap: 2, chip: 1 })?.id).toBe('core'); // 메탈이 아니라 코어
   });
   it('입력이 모자라면 null', () => {
-    expect(findRecipe(['chip'])).toBeNull();
-    expect(findRecipe([])).toBeNull();
+    expect(findRecipe({ chip: 1 })).toBeNull();
+    expect(findRecipe({})).toBeNull();
+  });
+  it('엑셀 100종이 전부 등록되고 재료가 모두 실존한다', () => {
+    expect(Object.keys(RESOURCES)).toHaveLength(100);
+    expect(RECIPES).toHaveLength(97);
+    for (const r of RECIPES) {
+      expect(RESOURCES[r.output]).toBeDefined();
+      for (const i of r.inputs) expect(RESOURCES[i]).toBeDefined();
+    }
   });
 });
 
@@ -202,14 +218,14 @@ const converterRig = (): SimState => {
 };
 
 describe('M2 Converter 가공', () => {
-  it('칩 + 데브리 → 코어 를 가공해 Exporter 로 판매한다', () => {
+  it('칩 + 데브리 → 펄스 를 가공해 Exporter 로 판매한다', () => {
     let s = converterRig();
     const before = s.gold;
     for (let i = 0; i < 800; i++) s = step(s);
-    expect(s.gold - before).toBeGreaterThanOrEqual(effectivePrice('core', 1));
+    expect(s.gold - before).toBeGreaterThanOrEqual(effectivePrice('pulse', 1));
   });
 
-  it('재고 {칩, 스크랩} → 플레이트 산출 후 판매 (Converter → Exporter, 생산 과정 없이 직접 검증)', () => {
+  it('재고 {칩, 스크랩} → 코어 산출 후 판매 (Converter → Exporter, 생산 과정 없이 직접 검증)', () => {
     let s: SimState = {
       ...initialState(),
       gold: 0,
@@ -221,7 +237,7 @@ describe('M2 Converter 가공', () => {
       converterBacklog: { c: { chip: 1, scrap: 1 } },
     };
     for (let i = 0; i < 300; i++) s = step(s);
-    expect(s.gold).toBe(effectivePrice('plate', 1));
+    expect(s.gold).toBe(effectivePrice('core', 1));
     expect(s.converterBacklog.c).toBeUndefined(); // 재고 소진
   });
 });
@@ -378,13 +394,13 @@ describe('M3-A 세이브 마이그레이션 (v2 → v3)', () => {
 // ---- M3-B: 레벨링 (업그레이드 · Exporter 레벨 · tier 판매가) --------------------
 
 describe('M3-B tier 판매가 + Exporter 레벨 배율 (2026-09-17 확정)', () => {
-  it('tier 높을수록 판매가 상승 (칩 tier0, 코어/플레이트 tier1 ×1.5)', () => {
-    expect(effectivePrice('chip', 1)).toBe(5); // round(5 × 1 × 1.01)
-    expect(effectivePrice('core', 1)).toBe(68); // round(45 × 1.5 × 1.01)
-    expect(effectivePrice('plate', 1)).toBe(35); // round(23 × 1.5 × 1.01)
+  it('tier 높을수록 판매가 상승 (칩 tier0 < 코어 tier1 < 플레이트 tier2, 2026-10-25 tier 표)', () => {
+    expect(effectivePrice('chip', 1)).toBe(5); // round(5 × 1.01)
+    expect(effectivePrice('core', 1)).toBe(30); // round(30 × 1.01)
+    expect(effectivePrice('plate', 1)).toBe(81); // round(80 × 1.01)
   });
   it('Exporter 레벨당 판매 수익률 = +레벨×1%', () => {
-    expect(effectivePrice('core', 10)).toBe(74); // round(45 × 1.5 × 1.10)
+    expect(effectivePrice('core', 10)).toBe(33); // round(30 × 1.10)
   });
 });
 

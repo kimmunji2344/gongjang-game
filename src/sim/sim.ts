@@ -519,11 +519,10 @@ export function step(state: SimState): SimState {
     }
 
     const bl = backlog[p.id] ?? {};
-    const have = Object.keys(bl).filter((r) => (bl[r] ?? 0) > 0);
-    const recipe = findRecipe(have);
+    const recipe = findRecipe(bl);
     const outRoute = routes.get(p.id)!; // computeRoutes 가 모든 Converter 를 넣음
 
-    if (recipe && recipe.inputs.every((i) => (bl[i] ?? 0) > 0)) {
+    if (recipe) {
       const outBlocked =
         outRoute.sink === 'blocked' ||
         (outRoute.sink === 'storage' && !!outRoute.sinkId && storageFull(outRoute.sinkId));
