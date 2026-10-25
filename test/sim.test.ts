@@ -17,6 +17,7 @@ import {
   zoneCost,
   nodeCost,
   upgradePlaceable,
+  unlockedTier,
   upgradeCost,
   effectivePrice,
   nodeGrade,
@@ -191,6 +192,13 @@ describe('M2 레시피 매칭', () => {
     expect(findRecipe({ chip: 1 })).toBeNull();
     expect(findRecipe({})).toBeNull();
   });
+  it('구역 수로 가공 tier 가 해금된다 (1·3·6·10·15구역 = Tier 1~5)', () => {
+    expect([1, 2, 3, 5, 6, 9, 10, 14, 15, 40].map(unlockedTier)).toEqual([1, 1, 2, 2, 3, 3, 4, 4, 5, 5]);
+  });
+  it('해금 전 tier 레시피는 재료가 있어도 가공하지 않는다', () => {
+    expect(findRecipe({ metal: 1, scrap: 1 }, 1)).toBeNull(); // 프레임(Tier 2)은 Tier 1 상한에서 잠김
+    expect(findRecipe({ metal: 1, scrap: 1 }, 2)?.id).toBe('frame');
+  });
   it('엑셀 100종이 전부 등록되고 재료가 모두 실존한다', () => {
     expect(Object.keys(RESOURCES)).toHaveLength(100);
     expect(RECIPES).toHaveLength(97);
@@ -250,6 +258,8 @@ describe('M2 Storage', () => {
       gold: 100000,
       unlockedResources: ['chip', 'scrap', 'debris'],
       placeables: [],
+      // 기본 용량 250 을 생산만으로 채우려면 너무 오래 걸려 245개를 미리 채워 둠 (남은 5개가 막힘 직전까지 도달)
+      storage: { 'store-1-4': { scrap: CONFIG.storageCapacity - 5 } },
     };
     s = ok(placeBuilding(s, 'node', [1, 1], 'scrap', 'S'));
     s = ok(placeConveyor(s, [1, 2], 'S'));
@@ -263,7 +273,8 @@ describe('M2 Storage', () => {
 });
 
 describe('M2 셧다운 (재고 무게 기반) + 긴급 배출', () => {
-  // 데브리(무게15) 만 공급되는 Converter — 어떤 레시피도 못 돌려 재고가 쌓임(무게15 > 한도10, 1개만에 셧다운)
+  // 데브리(무게15) 만 공급되고 출력이 막힌 Converter — 가공 결과(록)를 못 내보내 재고가 쌓임.
+  // 한도 100 은 데브리 7개(105)에서 넘으므로 6개를 미리 쌓아 두고 7번째가 도착하면 셧다운.
   const jamRig = (): SimState => {
     let s: SimState = {
       ...initialState(),
@@ -273,7 +284,7 @@ describe('M2 셧다운 (재고 무게 기반) + 긴급 배출', () => {
     s = ok(placeBuilding(s, 'node', [1, 1], 'debris', 'S'));
     s = ok(placeConveyor(s, [1, 2], 'S'));
     s = ok(placeConverter(s, [1, 3], 'E'));
-    return s;
+    return { ...s, converterBacklog: { 'conv-1-3': { debris: 6 } } };
   };
 
   it('재고 무게가 한도에 도달하면 셧다운되고 상류 Node 가 멈춘다', () => {
@@ -281,7 +292,7 @@ describe('M2 셧다운 (재고 무게 기반) + 긴급 배출', () => {
     for (let i = 0; i < 350; i++) s = step(s);
     expect(shutdownSet(s).has('conv-1-3')).toBe(true);
     expect(Object.keys(shutdownInfo(s))).toEqual(['conv-1-3']);
-    expect(s.converterBacklog['conv-1-3'].debris).toBe(1); // 데브리 1개(무게15) 만으로 이미 한도 초과
+    expect(s.converterBacklog['conv-1-3'].debris).toBe(7); // 7개째(무게 105 ≥ 한도 100)에서 정지
   });
 
   it('긴급 배출로 재고를 비우면 즉시 셧다운이 풀린다', () => {
@@ -361,7 +372,8 @@ describe('M3-A 자원 해금 (칩 판매)', () => {
   });
 
   it('칩 누적 판매가 한도 도달 → 스크랩·데브리 해금 → 배치 가능', () => {
-    let s = connectStartKit(initialState());
+    // 한도 100개를 생산만으로 채우면 오래 걸려 99개를 이미 판 상태로 시작 (마지막 1개 판매가 해금을 일으킴)
+    let s = { ...connectStartKit(initialState()), chipSold: CONFIG.resourceUnlockChips - 1 };
     for (let i = 0; i < 2000 && !s.unlockedResources.includes('scrap'); i++) s = step(s);
     expect(s.chipSold).toBeGreaterThanOrEqual(CONFIG.resourceUnlockChips);
     expect(s.unlockedResources).toEqual(['chip', 'scrap', 'debris']);
@@ -435,9 +447,9 @@ describe('M3-B Node 유효 등급 / Storage 용량 / 컨베이어 등급 (2026-0
     expect(nodeGrade('chip', 30)).toBe(1);
   });
   it('storageCap: 레벨당 +250', () => {
-    expect(storageCap(1)).toBe(10);
-    expect(storageCap(2)).toBe(260);
-    expect(storageCap(3)).toBe(510);
+    expect(storageCap(1)).toBe(250);
+    expect(storageCap(2)).toBe(500);
+    expect(storageCap(3)).toBe(750);
   });
   it('conveyorGrade: 레벨 1~10 등급표 (2026-09-20 확정: 15,14,13,12,11,10,8,6,4,2)', () => {
     expect(conveyorGrade(1)).toBe(15);
@@ -486,12 +498,15 @@ describe('M3-B 설비 업그레이드 (2026-09-17 확정: 1~5레벨 골드만·1
     const r = upgradePlaceable(rig(), [3, 3]);
     if (typeof r === 'string') throw new Error(r);
     expect(r.storageLevel['st']).toBe(2);
-    expect(storageCap(r.storageLevel['st'])).toBe(260);
+    expect(storageCap(r.storageLevel['st'])).toBe(500);
   });
 
-  it('6레벨(→7) 전환부터는 재료(코어)가 필요 (재료 종류 미정 동안 임시 유지)', () => {
+  it('6레벨(→7) 전환부터는 재료가 필요 — 골드는 1.5배 공식 계속, 재료는 레벨별 Tier 1~4 × 5 (2026-10-25 확정)', () => {
     const s: SimState = { ...rig(), nodeLevel: { n: 6 } };
-    expect(upgradeCost(s, [1, 1])).toEqual({ gold: 60, material: 'core', materialQty: 6 });
+    expect(upgradeCost(s, [1, 1])).toEqual({ gold: 380, material: 'core', materialQty: 5 });
+    expect(upgradeCost({ ...s, nodeLevel: { n: 7 } }, [1, 1])).toMatchObject({ gold: 570, material: 'plate' });
+    expect(upgradeCost({ ...s, nodeLevel: { n: 8 } }, [1, 1])).toMatchObject({ gold: 854, material: 'module' });
+    expect(upgradeCost({ ...s, nodeLevel: { n: 9 } }, [1, 1])).toMatchObject({ gold: 1281, material: 'engine' });
     expect(upgradePlaceable(s, [1, 1])).toContain('부족'); // Storage 에 코어 없음
   });
 
@@ -504,7 +519,7 @@ describe('M3-B 설비 업그레이드 (2026-09-17 확정: 1~5레벨 골드만·1
     const r = upgradePlaceable(s, [1, 1]);
     if (typeof r === 'string') throw new Error(r);
     expect(r.nodeLevel['n']).toBe(7);
-    expect(totalInStorage(r.storage, 'core')).toBe(4);
+    expect(totalInStorage(r.storage, 'core')).toBe(5); // 10 - 5
   });
 
   it('골드 부족 시 거부', () => {
@@ -534,6 +549,8 @@ describe('M3-B Storage 자원별 보관', () => {
       gold: 100000,
       unlockedResources: ['chip', 'scrap', 'debris'],
       placeables: [],
+      // 기본 용량 250 을 생산만으로 채우면 오래 걸려 120+120 을 미리 채워 둠 (나머지 10개는 두 Node 가 채움)
+      storage: { 'store-3-1': { scrap: 120, debris: 120 } },
     };
     s = ok(placeBuilding(s, 'node', [1, 1], 'scrap', 'E'));
     s = ok(placeConveyor(s, [2, 1], 'E'));
@@ -607,11 +624,24 @@ describe('M5 세이브 마이그레이션 (v4 → v5)', () => {
 });
 
 describe('M6 NPC 일일 퀘스트 (하루 1회, day 는 인자로 주입 — 순수함수)', () => {
+  it('도감에 등록한 자원 중에서 tier 가중으로 요청하고 수량은 tier 별이다 (2026-10-25 확정)', () => {
+    const base = { ...initialState(), codexResources: ['chip', 'core', 'plate', 'metal'] };
+    for (let d = 1; d <= 60; d++) {
+      const npc = refreshNpcQuest(base, `2026-10-${d}`).npc!;
+      expect(base.codexResources).toContain(npc.resource);
+      expect(npc.qty).toBe(CONFIG.npcTierQty[RESOURCES[npc.resource].tier]);
+    }
+    const picked = new Set(
+      Array.from({ length: 60 }, (_, d) => refreshNpcQuest(base, `2026-10-${d}`).npc!.resource),
+    );
+    expect(picked.size).toBeGreaterThan(1); // 한 종류에 고정되지 않음
+  });
+
   it('퀘스트가 없으면 오늘 날짜로 새로 발급', () => {
     const s = refreshNpcQuest(initialState(), '2026-09-12');
     expect(s.npc).not.toBeNull();
     expect(s.npc?.day).toBe('2026-09-12');
-    expect(s.npc?.qty).toBe(CONFIG.npcQuestQty);
+    expect(s.npc?.qty).toBe(CONFIG.npcTierQty[0]); // 도감이 비었으면 해금 원자재(tier 0) → 3개
     expect(s.unlockedResources).toContain(s.npc?.resource);
   });
 

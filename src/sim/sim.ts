@@ -519,7 +519,7 @@ export function step(state: SimState): SimState {
     }
 
     const bl = backlog[p.id] ?? {};
-    const recipe = findRecipe(bl);
+    const recipe = findRecipe(bl, unlockedTier(state.ownedZones.length));
     const outRoute = routes.get(p.id)!; // computeRoutes 가 모든 Converter 를 넣음
 
     if (recipe) {
@@ -790,24 +790,24 @@ function levelsOf(state: SimState, kind: UpgradeableKind): Readonly<Record<strin
 }
 
 // tile 설비의 다음 레벨업 비용 (Node/Storage/컨베이어). Exporter 는 자동 레벨업이라 대상 아님.
-// 2026-09-17 확정: 1~5레벨(레벨업 전 기준)은 골드만(base×growth^(level-1)),
-//   6~10레벨은 재료 미정이라 예전 공식(골드 10×레벨 + 재료)을 임시로 유지.
+// 2026-10-25 확정: 골드는 전 레벨 base×growth^(level-1), 레벨업 전 기준 6레벨 이상은
+//   upgradeMaterials 표의 재료(Tier 1~4) × upgradeMaterialQty 도 함께 소모.
 export function upgradeCost(state: SimState, tile: Tile): UpgradeCost | null {
   const p = placeableAt(state.placeables, tile);
   if (!p || !isUpgradeable(p.kind)) return null;
   const level = levelsOf(state, p.kind)[p.id] ?? 1;
-  if (level <= 5) {
-    return {
-      gold: Math.round(CONFIG.upgradeCostBase * CONFIG.upgradeCostGrowth ** (level - 1)),
-      material: null,
-      materialQty: 0,
-    };
-  }
-  return {
-    gold: CONFIG.upgradeCostLegacyPerLevel * level,
-    material: CONFIG.upgradeMaterial,
-    materialQty: CONFIG.upgradeMaterialPerLevel * level,
-  };
+  const gold = Math.round(CONFIG.upgradeCostBase * CONFIG.upgradeCostGrowth ** (level - 1));
+  const material = level >= 6 ? CONFIG.upgradeMaterials[level - 6] ?? null : null;
+  return { gold, material, materialQty: material ? CONFIG.upgradeMaterialQty : 0 };
+}
+
+// 소유 구역 수로 해금된 가공 tier 상한 (CONFIG.tierUnlockZones). 구역이 늘수록 높은 tier 레시피가 열림.
+export function unlockedTier(zoneCount: number): number {
+  let t = 0;
+  CONFIG.tierUnlockZones.forEach((need, tier) => {
+    if (zoneCount >= need) t = tier;
+  });
+  return t;
 }
 
 // 설비 업그레이드 — 골드(+6레벨부턴 Storage 재료도) 소모, 레벨 +1. 최대레벨(maxLevel) 도달 시 거부.
@@ -936,11 +936,21 @@ export function rotatePlaceable(state: SimState, tile: Tile, dir: Dir): PlaceRes
 
 // ---- M6 NPC 일일 퀘스트 (하루 1회, 클라 시계 기준 — sim.ts 순수성 유지 위해 day 를 인자로 받음) ----
 
-// 오늘 날짜 문자열을 결정론적으로 해싱해 unlockedResources 중 하나를 고른다 (진짜 랜덤 대신 —
-// 같은 입력엔 항상 같은 결과, 테스트 가능. 정말 랜덤이 필요해지면 이후 교체).
+// 날짜 문자열을 결정론적으로 해싱(FNV-1a)해 요청 자원을 고른다 (진짜 랜덤 대신 —
+// 같은 입력엔 항상 같은 결과, 테스트 가능). 2026-10-25 확정: 풀 안에 있는 tier 들 중 가중치(CONFIG.npcTierWeights)로
+// tier 를 먼저 뽑고, 그 tier 안에서 균등하게 한 자원을 뽑는다. 수량은 tier 별(CONFIG.npcTierQty).
+function hashDay(s: string): number {
+  let h = 2166136261;
+  for (const ch of s) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
+  return h >>> 0;
+}
 function pickNpcResource(day: string, pool: readonly string[]): string {
-  const hash = [...day].reduce((sum, ch) => sum + ch.charCodeAt(0), 0);
-  return pool[hash % pool.length];
+  const tiers = [...new Set(pool.map((r) => RESOURCES[r]?.tier ?? 0))].sort((a, b) => a - b);
+  const total = tiers.reduce((sum, t) => sum + CONFIG.npcTierWeights[t], 0);
+  let roll = hashDay(day) % total;
+  const tier = tiers.find((t) => (roll -= CONFIG.npcTierWeights[t]) < 0) ?? tiers[0];
+  const inTier = pool.filter((r) => (RESOURCES[r]?.tier ?? 0) === tier);
+  return inTier[hashDay(day + '#') % inTier.length];
 }
 
 // 날짜가 바뀌면 새 NPC 요청으로 교체. day 가 같으면 완료 여부와 무관하게 그대로 유지
@@ -948,12 +958,12 @@ function pickNpcResource(day: string, pool: readonly string[]): string {
 // 이월 없음 — 스펙: "방문 주기 하루 1회".
 export function refreshNpcQuest(state: SimState, day: string): SimState {
   if (state.npc?.day === day) return state;
-  const pool = state.unlockedResources;
+  // 만들어 본 자원(도감) 중에서 요청 — 못 만드는 걸 요구하지 않도록. 도감이 비었으면 해금된 원자재.
+  const pool = state.codexResources.length ? state.codexResources : state.unlockedResources;
   if (pool.length === 0) return state;
-  return {
-    ...state,
-    npc: { resource: pickNpcResource(day, pool), qty: CONFIG.npcQuestQty, day, done: false },
-  };
+  const resource = pickNpcResource(day, pool);
+  const qty = CONFIG.npcTierQty[RESOURCES[resource]?.tier ?? 0];
+  return { ...state, npc: { resource, qty, day, done: false } };
 }
 
 // NPC 요청 자원을 Storage 에서 인출해 건네기 — 보상 = 기본 판매가(Exporter 레벨 무관) × 수량 × 알파 배수.

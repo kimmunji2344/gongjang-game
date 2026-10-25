@@ -12,6 +12,7 @@ import {
   storageCap,
   storageTotal,
   totalInStorage,
+  unlockedTier,
   zoneCost,
 } from '../sim/sim';
 import { HallOfFame, SeasonRanking } from '../net/rank';
@@ -136,9 +137,16 @@ export function updateTopStats(sim: SimState): void {
   statsGold.textContent = `💰 ${sim.gold}G`;
   statsZone.textContent = `🗺️ 구역 ${sim.ownedZones.length}개 (다음 ${zoneCost(sim)}G)`;
   const locked = !sim.unlockedResources.includes('scrap');
-  statsUnlock.textContent = locked
-    ? `🔒 칩판매 ${sim.chipSold}/${CONFIG.resourceUnlockChips}`
-    : '🔓 자원 해금됨';
+  if (locked) {
+    statsUnlock.textContent = `🔒 칩판매 ${sim.chipSold}/${CONFIG.resourceUnlockChips}`;
+    return;
+  }
+  const tier = unlockedTier(sim.ownedZones.length);
+  const nextNeed = CONFIG.tierUnlockZones[tier + 1];
+  statsUnlock.textContent =
+    nextNeed === undefined
+      ? `🔓 가공 Tier ${tier} (전부 해금)`
+      : `🔓 가공 Tier ${tier} · Tier ${tier + 1}은 구역 ${nextNeed}개`;
 }
 
 /** 현재 도구가 방향/자원을 갖는 배치 도구일 때, 설치될 방향·자원을 상단바에 표시 */
